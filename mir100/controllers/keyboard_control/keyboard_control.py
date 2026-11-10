@@ -8,6 +8,35 @@ import threading
 import queue
 import time
 
+
+def load_env_file():
+    # Busca un .env subiendo desde este archivo (raiz del repo) y carga sus
+    # variables sin sobrescribir las que ya existan en el entorno.
+    directory = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        path = os.path.join(directory, ".env")
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as env_file:
+                for line in env_file:
+                    line = line.strip()
+                    if not line or line.startswith("#") or "=" not in line:
+                        continue
+                    name, value = line.split("=", 1)
+                    name = name.strip()
+                    if name.startswith("export "):
+                        name = name[len("export "):].strip()
+                    value = value.strip().strip('"').strip("'")
+                    if name and value and name not in os.environ:
+                        os.environ[name] = value
+            return path
+        parent = os.path.dirname(directory)
+        if parent == directory:
+            return None
+        directory = parent
+
+
+load_env_file()
+
 try:
     from typesafe_sdk import TypeSafeClient, Choice
     JEV_SDK_AVAILABLE = True

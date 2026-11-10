@@ -90,8 +90,9 @@ should be tuned to the robot's real footprint. LiDAR sector fractions in
    from GitHub, so the first load needs internet.
 2. Install the Python deps into the Python interpreter Webots uses (set in Webots
    preferences): `ultralytics`, `opencv-python`, `numpy`, `typesafe-sdk` (optional).
-3. For JEV obstacle avoidance, set `TYPESAFE_API_KEY` in the environment Webots is
-   launched from. Without it the robot still drives and stops safely at obstacles, but
+3. For JEV obstacle avoidance, put `TYPESAFE_API_KEY=...` in the repo-root `.env`
+   (gitignored). `load_env_file()` in the controller loads it at startup without
+   overriding variables already set in the environment. Without the key the robot still drives and stops safely at obstacles, but
    it won't go around them.
 4. Click inside the 3D view, then press `1`, `2` or `3`.
 
@@ -100,7 +101,7 @@ Webots console.
 
 ## Notes / gotchas
 
-- Don't commit API keys. JEV reads the key from `TYPESAFE_API_KEY` only.
+- Don't commit API keys. JEV reads the key from `TYPESAFE_API_KEY` (env or `.env`).
 - `keyboard_matlab.m` defines `function keyboard_control` (its name doesn't match the
   file) and is stock sample code. Ignore it unless it's being revived.
 - `.mir100.wbproj` / `.mir100.jpg` are Webots-generated UI state and thumbnail files.
