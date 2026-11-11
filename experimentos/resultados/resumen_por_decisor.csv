@@ -1,0 +1,4 @@
+decisor,ejecuciones,llegadas,tasa_llegada_pct,avance_medio_m,distancia_final_media_m,t_efectivo_medio_llegadas_s,t_efectivo_medio_s,recorrido_medio_m,distancia_minima_lidar_m,pasos_peligrosos,decisiones,decisiones_aceptadas_pct,latencia_media_s,latencia_p95_s,espera_total_decisiones_s,coincide_con_regla_pct,motivos_fallo
+jev,30,10,33.3,0.6,4.92,10.04,7.78,0.6,0.664,0,20,0.0,0.53,0.725,10.53,100.0,jev_baja_confianza x20
+regla,30,10,33.3,0.2,5.32,10.04,37.45,1.61,0.261,1003,20,100.0,,,0.0,100.0,evasion_sin_salida x20
+sin_jev,30,10,33.3,0.6,4.92,10.04,7.43,0.6,0.664,0,0,,,,0,,jev_no_disponible x20

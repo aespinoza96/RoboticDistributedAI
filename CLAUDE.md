@@ -105,3 +105,12 @@ Webots console.
 - `keyboard_matlab.m` defines `function keyboard_control` (its name doesn't match the
   file) and is stock sample code. Ignore it unless it's being revived.
 - `.mir100.wbproj` / `.mir100.jpg` are Webots-generated UI state and thumbnail files.
+
+## Experiments (`experimentos/`)
+
+A/B benchmark of the obstacle-avoidance decider, run headless (Webots `--batch --mode=fast --no-rendering`; works while a GUI Webots is open, on a different `--port`).
+
+- `mir100/controllers/keyboard_control/experimento.py`: experiment mode, enabled only by `EXP_*` env vars (normal keyboard use is unchanged). Deciders: `jev` (original behaviour), `regla` (side with more clearance, tie-break toward the goal, same LiDAR acceptance filter), `sin_jev` (original controller with Jev unavailable). Each rep > 0 shifts the start pose (±0.3 m, ±0.6 rad, fixed seed per route+rep), so every decider faces the same scenarios. Each run appends one JSON line and calls `simulationQuit`.
+- `JEV_PROVEEDOR=typesafe` (default, official SDK, `api.typesafe.ai`) or `jevai` (`https://www.jevai.org/api/v1/decisions`, personal keys from jevai.org). Both read `TYPESAFE_API_KEY` from `.env`.
+- Run: `python3 experimentos/ejecutar.py --decisores regla sin_jev jev --rutas 1 2 3 --reps 10` (it checks Jev with one real call first and skips Jev runs if it fails). Analyse: `python3 experimentos/analizar.py` → CSVs, `benchmark.md`, `benchmark.png` in `experimentos/resultados/`.
+- Results of 2026-11-10 (90 runs): all three deciders reach the goal only on route 2 (0.8 m, no obstacle). Jev answered RIGHT 20/20 (same as the rule) with confidence 0.19–0.35 < `JEV_MIN_CONFIDENCE` 0.60, so all were rejected and `jev` ≡ `sin_jev` in all 30 paired scenarios (+0.53 s mean latency). The rule's turns were accepted but `AVOID_FOLLOW` failed 20/20 (`EVASION SIN SALIDA`); the LiDAR sector fractions are mislabeled (see the PRD), which is the likely root cause.

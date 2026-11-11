@@ -1,0 +1,51 @@
+INFO: keyboard_conveyor_platform: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/keyboard_conveyor_platform/keyboard_conveyor_platform 0.6 0
+INFO: keyboard_control: Starting controller: /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 -u keyboard_control.py 
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 2 0
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper 3
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0.2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0.2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0 90
+To move the ConveyorPlatform with your keyboard, click first inside the simulation window and press: 
+   Belt : +/-       
+   Reset: Space bar 
+DESTINO DISPONIBLE: ENTREGA_1 -> [3.33, -3.78, -0.03]
+DESTINO DISPONIBLE: ENTREGA_2 -> [3.76, 4.31, -0.03]
+DESTINO DISPONIBLE: ENTREGA_3 -> [-3.61, 4.31, -0.03]
+
+MiR100: YOLO + LiDAR + NAVEGACION LOCAL REACTIVA
+Teclas 1/2/3: destino | 0 o ESPACIO: cancelar | Flechas: control manual
+JEV: asesor para elegir giro cuando hay obstaculos (no planificador global)
+PRECAUCION: prueba inicial en simulacion despejada, velocidad baja
+
+MODO EXPERIMENTO: decisor jev | ruta 2 | rep 4
+
+INICIANDO RUTA: ENTREGA_2
+ENTREGA_2 | GOAL | Dist 0.90 m | Ang 2.11 rad | I 1.25 DI 0.91 F 0.94 DD 2.99 D 6.56
+ENTREGA_2 | GOAL | Dist 0.91 m | Ang 1.87 rad | I 1.11 DI 0.97 F 1.11 DD 3.87 D 6.83
+ENTREGA_2 | GOAL | Dist 0.91 m | Ang 1.64 rad | I 1.09 DI 1.05 F 1.43 DD 5.47 D 6.46
+ENTREGA_2 | GOAL | Dist 0.91 m | Ang 1.40 rad | I 1.15 DI 1.20 F 2.07 DD 5.87 D 6.35
+ENTREGA_2 | GOAL | Dist 0.91 m | Ang 1.16 rad | I 1.26 DI 1.46 F 2.33 DD 6.49 D 4.70
+ENTREGA_2 | GOAL | Dist 0.91 m | Ang 0.92 rad | I 1.38 DI 1.92 F 2.30 DD 6.21 D 3.10
+ENTREGA_2 | GOAL | Dist 0.91 m | Ang 0.68 rad | I 1.52 DI 2.73 F 2.29 DD 6.02 D 2.39
+ENTREGA_2 | GOAL | Dist 0.91 m | Ang 0.44 rad | I 1.76 DI 3.37 F 5.76 DD 5.87 D 2.00
+ENTREGA_2 | GOAL | Dist 0.91 m | Ang 0.20 rad | I 2.17 DI 5.44 F 5.85 DD 3.33 D 1.77
+ENTREGA_2 | GOAL | Dist 0.79 m | Ang 0.10 rad | I 2.52 DI 5.39 F 5.72 DD 2.92 D 1.81
+ENTREGA_2 | GOAL | Dist 0.57 m | Ang 0.09 rad | I 2.80 DI 5.20 F 5.62 DD 3.06 D 1.99
+ENTREGA_2 | GOAL | Dist 0.36 m | Ang 0.08 rad | I 2.79 DI 5.05 F 5.53 DD 3.18 D 2.17
+INFO: keyboard_conveyor_platform: Terminating.
+INFO: keyboard_control: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+
+DESTINO ALCANZADO: ENTREGA_2 | Distancia 0.30 m
+EXPERIMENTO TERMINADO: llegada | jev | ruta 2 | 11.6 s
+UNSUPPORTED (log once): POSSIBLE ISSUE: unit 2 GLD_TEXTURE_INDEX_2D is unloadable and bound to sampler type (Float) - using zero texture because texture unloadable

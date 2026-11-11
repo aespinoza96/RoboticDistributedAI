@@ -1,0 +1,96 @@
+INFO: keyboard_conveyor_platform: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/keyboard_conveyor_platform/keyboard_conveyor_platform 0.6 0
+INFO: keyboard_control: Starting controller: /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 -u keyboard_control.py 
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 2 0
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper 3
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0.2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0.2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0 90
+To move the ConveyorPlatform with your keyboard, click first inside the simulation window and press: 
+   Belt : +/-       
+   Reset: Space bar 
+DESTINO DISPONIBLE: ENTREGA_1 -> [3.33, -3.78, -0.03]
+DESTINO DISPONIBLE: ENTREGA_2 -> [3.76, 4.31, -0.03]
+DESTINO DISPONIBLE: ENTREGA_3 -> [-3.61, 4.31, -0.03]
+
+MiR100: YOLO + LiDAR + NAVEGACION LOCAL REACTIVA
+Teclas 1/2/3: destino | 0 o ESPACIO: cancelar | Flechas: control manual
+JEV: asesor para elegir giro cuando hay obstaculos (no planificador global)
+PRECAUCION: prueba inicial en simulacion despejada, velocidad baja
+
+MODO EXPERIMENTO: decisor regla | ruta 3 | rep 7
+
+INICIANDO RUTA: ENTREGA_3
+ENTREGA_3 | GOAL | Dist 7.09 m | Ang -0.44 rad | I 1.20 DI 1.21 F 1.88 DD 5.37 D 6.32
+ENTREGA_3 | GOAL | Dist 7.09 m | Ang -0.20 rad | I 1.18 DI 1.10 F 1.37 DD 5.21 D 6.49
+REGLA APROBADA POR LIDAR: GIRAR RIGHT
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang -0.09 rad | I 1.07 DI 0.95 F 1.10 DD 3.59 D 6.75
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 0.13 rad | I 1.16 DI 0.89 F 0.93 DD 3.19 D 6.40
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 0.37 rad | I 1.44 DI 0.85 F 0.85 DD 1.79 D 5.70
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 0.61 rad | I 1.63 DI 0.89 F 0.83 DD 1.25 D 4.24
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 0.85 rad | I 1.52 DI 1.02 F 0.85 DD 1.03 D 3.52
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 1.09 rad | I 1.41 DI 1.32 F 0.90 DD 0.96 D 2.78
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 1.33 rad | I 1.38 DI 1.31 F 0.97 DD 0.97 D 1.69
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 1.57 rad | I 1.47 DI 1.24 F 1.10 DD 1.06 D 1.41
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 1.81 rad | I 1.71 DI 1.19 F 1.21 DD 1.16 D 1.31
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 2.04 rad | I 2.31 DI 1.18 F 1.15 DD 1.28 D 1.31
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 2.28 rad | I 4.11 DI 1.28 F 1.16 DD 1.44 D 1.39
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 2.52 rad | I 6.00 DI 1.53 F 1.19 DD 1.35 D 1.50
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 2.76 rad | I 6.00 DI 2.06 F 1.24 DD 1.28 D 1.61
+ENTREGA_3 | AVOID_TURN | Dist 6.97 m | Ang 3.00 rad | I 6.38 DI 3.34 F 1.33 DD 1.32 D 1.74
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_3 | AVOID_FOLLOW | Dist 7.07 m | Ang 2.85 rad | I 5.98 DI 2.33 F 1.24 DD 1.26 D 1.74
+ENTREGA_3 | AVOID_FOLLOW | Dist 7.19 m | Ang 2.62 rad | I 5.76 DI 1.56 F 1.12 DD 1.22 D 1.76
+ENTREGA_3 | AVOID_TURN | Dist 7.28 m | Ang 2.40 rad | I 5.23 DI 1.16 F 1.00 DD 1.25 D 1.74
+ENTREGA_3 | AVOID_TURN | Dist 7.28 m | Ang 2.63 rad | I 5.66 DI 1.45 F 1.03 DD 1.13 D 1.85
+ENTREGA_3 | AVOID_TURN | Dist 7.29 m | Ang 2.87 rad | I 5.77 DI 2.08 F 1.10 DD 1.11 D 1.94
+ENTREGA_3 | AVOID_TURN | Dist 7.29 m | Ang 3.11 rad | I 6.30 DI 3.79 F 1.22 DD 1.19 D 1.66
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_3 | AVOID_FOLLOW | Dist 7.32 m | Ang -3.07 rad | I 6.36 DI 5.38 F 1.30 DD 1.23 D 1.57
+ENTREGA_3 | AVOID_FOLLOW | Dist 7.45 m | Ang 2.98 rad | I 5.78 DI 2.58 F 1.12 DD 1.12 D 1.81
+ENTREGA_3 | AVOID_TURN | Dist 7.57 m | Ang 2.74 rad | I 5.38 DI 1.57 F 1.00 DD 1.04 D 2.17
+ENTREGA_3 | AVOID_TURN | Dist 7.57 m | Ang 2.97 rad | I 5.62 DI 2.38 F 1.07 DD 1.07 D 1.76
+ENTREGA_3 | AVOID_TURN | Dist 7.57 m | Ang -3.08 rad | I 6.31 DI 5.14 F 1.22 DD 1.16 D 1.49
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_3 | AVOID_FOLLOW | Dist 7.62 m | Ang -3.04 rad | I 6.28 DI 5.09 F 1.26 DD 1.18 D 1.47
+ENTREGA_3 | AVOID_FOLLOW | Dist 7.75 m | Ang 3.01 rad | I 5.52 DI 2.63 F 1.08 DD 1.07 D 1.68
+ENTREGA_3 | AVOID_TURN | Dist 7.83 m | Ang 2.95 rad | I 5.32 DI 2.21 F 1.03 DD 1.03 D 1.74
+ENTREGA_3 | AVOID_TURN | Dist 7.83 m | Ang -3.10 rad | I 5.93 DI 4.60 F 1.17 DD 1.12 D 1.46
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_3 | AVOID_FOLLOW | Dist 7.85 m | Ang -2.95 rad | I 6.18 DI 4.87 F 1.32 DD 1.19 D 1.39
+ENTREGA_3 | AVOID_FOLLOW | Dist 7.98 m | Ang 3.10 rad | I 5.48 DI 3.34 F 1.11 DD 1.08 D 1.53
+ENTREGA_3 | AVOID_TURN | Dist 8.07 m | Ang 2.98 rad | I 5.10 DI 2.30 F 1.02 DD 1.01 D 1.66
+ENTREGA_3 | AVOID_TURN | Dist 8.07 m | Ang -3.07 rad | I 5.73 DI 4.65 F 1.17 DD 1.11 D 1.42
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_3 | AVOID_FOLLOW | Dist 8.10 m | Ang -2.94 rad | I 6.14 DI 4.62 F 1.31 DD 1.17 D 1.36
+ENTREGA_3 | AVOID_FOLLOW | Dist 8.22 m | Ang 3.11 rad | I 5.22 DI 3.39 F 1.09 DD 1.07 D 1.50
+ENTREGA_3 | AVOID_TURN | Dist 8.30 m | Ang 3.03 rad | I 4.95 DI 2.62 F 1.03 DD 1.02 D 1.56
+ENTREGA_3 | AVOID_TURN | Dist 8.31 m | Ang -3.01 rad | I 5.66 DI 4.42 F 1.20 DD 1.12 D 1.37
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_3 | AVOID_FOLLOW | Dist 8.35 m | Ang -2.96 rad | I 5.85 DI 4.37 F 1.27 DD 1.15 D 1.36
+ENTREGA_3 | AVOID_FOLLOW | Dist 8.48 m | Ang 3.09 rad | I 4.87 DI 3.10 F 1.06 DD 1.04 D 1.50
+ENTREGA_3 | AVOID_TURN | Dist 8.54 m | Ang 3.10 rad | I 4.84 DI 3.22 F 1.06 DD 1.04 D 1.47
+ENTREGA_3 | AVOID_TURN | Dist 8.54 m | Ang -2.94 rad | I 5.69 DI 4.19 F 1.27 DD 1.14 D 1.33
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_3 | AVOID_FOLLOW | Dist 8.62 m | Ang -3.02 rad | I 5.26 DI 4.10 F 1.21 DD 1.12 D 1.37
+ENTREGA_3 | AVOID_FOLLOW | Dist 8.74 m | Ang 3.03 rad | I 4.47 DI 2.60 F 1.02 DD 1.01 D 1.54
+ENTREGA_3 | AVOID_TURN | Dist 8.76 m | Ang -3.10 rad | I 4.81 DI 3.97 F 1.12 DD 1.06 D 1.39
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_3 | AVOID_FOLLOW | Dist 8.77 m | Ang -2.87 rad | I 5.78 DI 3.94 F 1.36 DD 1.17 D 1.31
+ENTREGA_3 | AVOID_FOLLOW | Dist 8.89 m | Ang -3.11 rad | I 4.63 DI 3.85 F 1.12 DD 1.07 D 1.40
+ENTREGA_3 | AVOID_TURN | Dist 8.99 m | Ang 3.05 rad | I 4.24 DI 2.75 F 1.02 DD 1.01 D 1.49
+INFO: keyboard_conveyor_platform: Terminating.
+INFO: keyboard_control: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+EVASION SIN SALIDA EN 45 s: STOP
+EXPERIMENTO TERMINADO: cancelada | regla | ruta 3 | 47.6 s
+UNSUPPORTED (log once): POSSIBLE ISSUE: unit 2 GLD_TEXTURE_INDEX_2D is unloadable and bound to sampler type (Float) - using zero texture because texture unloadable

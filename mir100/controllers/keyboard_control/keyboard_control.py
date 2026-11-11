@@ -37,6 +37,10 @@ def load_env_file():
 
 load_env_file()
 
+# Modo experimento (variables EXP_*, ver experimentos/ejecutar.py); None = uso normal
+from experimento import RegistroExperimento, decision_regla, leer_configuracion, variar_pose_inicial
+EXPERIMENTO = leer_configuracion()
+
 try:
     from typesafe_sdk import TypeSafeClient, Choice
     JEV_SDK_AVAILABLE = True
@@ -230,18 +234,47 @@ def follow_side_omega(direction, left, right, goal_angle):
 # ===================================================
 # CONSULTAS JEV EN SEGUNDO HILO (SIN ACCESO A WEBOTS EN EL HILO)
 # ===================================================
+JEV_INSTRUCTIONS = "Recommend one short exploratory turn, not a complete route. Prefer the side with adequate side AND forward-diagonal clearance. Use STOP if no safe candidate exists or observations are uncertain. The robot safety controller has final authority; your recommendation never bypasses safety constraints."
+JEV_CRITERIA = {
+    "LEFT": "Turn in place left to search for a free path, only if the measured left sector provides adequate clearance",
+    "RIGHT": "Turn in place right to search for a free path, only if the measured right sector provides adequate clearance",
+    "STOP": "Stop because both sides are narrow, a person is present, or measurements are too uncertain"
+}
+
+# Proveedor de Jev: "typesafe" (SDK oficial, api.typesafe.ai) o "jevai"
+# (https://www.jevai.org/api/v1/decisions, claves personales de jevai.org).
+# La misma pregunta y la misma clave (TYPESAFE_API_KEY) en ambos casos.
+JEV_PROVIDER = os.getenv("JEV_PROVEEDOR", "typesafe")
+JEVAI_URL = "https://www.jevai.org/api/v1/decisions"
+
+
+def ask_jevai(observation):
+    import httpx2
+    body = {"model": "typesafe-ai/jev", "state": observation, "questions": {
+        "avoid_action": {"type": "choice", "instructions": JEV_INSTRUCTIONS, "criteria": JEV_CRITERIA}}}
+    response = httpx2.post(JEVAI_URL, json=body, timeout=JEV_REQUEST_TIMEOUT,
+                           headers={"Authorization": "Bearer " + os.getenv("TYPESAFE_API_KEY", "")})
+    if response.status_code != 200:
+        raise RuntimeError("jevai.org HTTP {}".format(response.status_code))
+    payload = response.json()
+    if payload.get("code") != 0:
+        raise RuntimeError("jevai.org: {}".format(payload.get("message")))
+    answer = payload["data"]["answers"]["avoid_action"]
+    return str(answer["choice"]).upper(), float(answer["confidence"])
+
+
 def ask_jev_worker(request_id, observation, response_queue):
     try:
-        with TypeSafeClient(model="jev-latest") as client:
-            response = client.system_one(state=observation, questions={
-                "avoid_action": Choice(instructions="Recommend one short exploratory turn, not a complete route. Prefer the side with adequate side AND forward-diagonal clearance. Use STOP if no safe candidate exists or observations are uncertain. The robot safety controller has final authority; your recommendation never bypasses safety constraints.", criteria={
-                    "LEFT": "Turn in place left to search for a free path, only if the measured left sector provides adequate clearance",
-                    "RIGHT": "Turn in place right to search for a free path, only if the measured right sector provides adequate clearance",
-                    "STOP": "Stop because both sides are narrow, a person is present, or measurements are too uncertain"
+        if JEV_PROVIDER == "jevai":
+            choice, confidence = ask_jevai(observation)
+        else:
+            with TypeSafeClient(model="jev-latest") as client:
+                response = client.system_one(state=observation, questions={
+                    "avoid_action": Choice(instructions=JEV_INSTRUCTIONS, criteria=JEV_CRITERIA)
                 })
-            })
-        answer = response.choices["avoid_action"]
-        response_queue.put((request_id, str(answer.choice).upper(), float(answer.confidence), None))
+            answer = response.choices["avoid_action"]
+            choice, confidence = str(answer.choice).upper(), float(answer.confidence)
+        response_queue.put((request_id, choice, confidence, None))
     except Exception as error:
         response_queue.put((request_id, None, 0.0, "{}: {}".format(type(error).__name__, error)))
 
@@ -339,6 +372,13 @@ print("Teclas 1/2/3: destino | 0 o ESPACIO: cancelar | Flechas: control manual")
 print("JEV: asesor para elegir giro cuando hay obstaculos (no planificador global)")
 print("PRECAUCION: prueba inicial en simulacion despejada, velocidad baja\n")
 
+registro = RegistroExperimento(EXPERIMENTO) if EXPERIMENTO else None
+salida_enviada = False
+jev_regla_esperada = None
+if registro is not None:
+    print("MODO EXPERIMENTO: decisor {} | ruta {} | rep {}".format(EXPERIMENTO["decisor"], EXPERIMENTO["ruta"], EXPERIMENTO["rep"]))
+    registro.variacion_inicial = variar_pose_inicial(robot_node, EXPERIMENTO["ruta"], EXPERIMENTO["rep"])
+
 # ===================================================
 # BUCLE PRINCIPAL
 # ===================================================
@@ -376,8 +416,9 @@ while robot.step(time_step) != -1:
                 person_clear_count = 0
             else:
                 person_clear_count += 1
-        cv2.imshow("MiR100 - YOLO todas las clases", annotated_frame if annotated_frame is not None else frame)
-        cv2.waitKey(1)
+        if registro is None:
+            cv2.imshow("MiR100 - YOLO todas las clases", annotated_frame if annotated_frame is not None else frame)
+            cv2.waitKey(1)
 
     # Leer todas las teclas; ultimo evento tiene prioridad.
     key = keyboard.getKey()
@@ -386,6 +427,10 @@ while robot.step(time_step) != -1:
         if next_key == -1:
             break
         key = next_key
+
+    # Experimento: lanzar la ruta sola tras unos pasos (sensores y YOLO ya listos)
+    if registro is not None and not registro.iniciado and step_counter == 10:
+        key = ord(str(EXPERIMENTO["ruta"]))
 
     if key in destination_nodes:
         jev_request_id += 1
@@ -399,6 +444,8 @@ while robot.step(time_step) != -1:
         manual_speed = 0.0
         manual_omega = 0.0
         print("\nINICIANDO RUTA: {}".format(current_destination_name))
+        if registro is not None and not registro.iniciado:
+            registro.iniciar(robot.getTime(), planar_position(robot_node), goal_geometry(robot_node, current_destination)[0])
     elif key == ord("0") or key == ord(" "):
         jev_request_id += 1
         jev_pending = False
@@ -443,6 +490,8 @@ while robot.step(time_step) != -1:
         distance, goal_angle = goal_geometry(robot_node, current_destination)
         if distance <= ARRIVAL_DISTANCE:
             print("\nDESTINO ALCANZADO: {} | Distancia {:.2f} m".format(current_destination_name, distance))
+            if registro is not None:
+                registro.terminar("llegada", robot.getTime(), distance)
             navigation_active = False
             current_destination = None
             current_destination_name = None
@@ -473,8 +522,23 @@ while robot.step(time_step) != -1:
                 else:
                     print("JEV RESPUESTA: {} | confianza {:.2f}".format(proposed, confidence))
                 side_space = left_distance if proposed == "LEFT" else right_distance if proposed == "RIGHT" else 0.0
-                if error is not None or confidence < JEV_MIN_CONFIDENCE or proposed not in ("LEFT", "RIGHT") or side_space < JEV_SIDE_CLEARANCE or not turn_clearance(scan, proposed):
+                if error is not None:
+                    jev_motivo = "error"
+                elif confidence < JEV_MIN_CONFIDENCE:
+                    jev_motivo = "baja_confianza"
+                elif proposed not in ("LEFT", "RIGHT"):
+                    jev_motivo = "jev_stop"
+                elif side_space < JEV_SIDE_CLEARANCE or not turn_clearance(scan, proposed):
+                    jev_motivo = "filtro_lidar"
+                else:
+                    jev_motivo = None
+                if registro is not None:
+                    registro.decision("jev", proposed, confidence, time.monotonic() - jev_started_at,
+                                      jev_motivo is None, jev_motivo, jev_regla_esperada)
+                if jev_motivo is not None:
                     print("JEV: decision rechazada por seguridad o baja confianza. STOP")
+                    if registro is not None:
+                        registro.cancelar_por("jev_" + jev_motivo if not jev_motivo.startswith("jev_") else jev_motivo)
                     navigation_active = False
                     current_destination = None
                     current_destination_name = None
@@ -490,6 +554,9 @@ while robot.step(time_step) != -1:
                 jev_pending = False
                 jev_request_id += 1  # Descartar respuesta tardia.
                 print("JEV TIMEOUT: STOP (sin decision vigente)")
+                if registro is not None:
+                    registro.decision("jev", None, None, JEV_REQUEST_TIMEOUT, False, "timeout", jev_regla_esperada)
+                    registro.cancelar_por("jev_timeout")
                 navigation_active = False
                 current_destination = None
                 current_destination_name = None
@@ -508,11 +575,34 @@ while robot.step(time_step) != -1:
                 target_omega = 0.0
                 if avoid_attempts >= MAX_AVOID_ATTEMPTS or not (turn_clearance(scan, "LEFT") or turn_clearance(scan, "RIGHT")):
                     print("NO HAY ESPACIO LATERAL SUFICIENTE / LIMITE DE EVASIONES: STOP")
+                    if registro is not None:
+                        registro.cancelar_por("sin_espacio_o_limite")
                     navigation_active = False
                     current_destination = None
                     current_destination_name = None
-                elif not JEV_ENABLED or not JEV_SDK_AVAILABLE or not os.getenv("TYPESAFE_API_KEY"):
+                elif registro is not None and EXPERIMENTO["decisor"] == "regla":
+                    # Misma informacion y mismo filtro que Jev, decidido localmente
+                    proposed = decision_regla(scan, goal_angle, turn_clearance, choose_avoid_direction)
+                    side_space = left_distance if proposed == "LEFT" else right_distance if proposed == "RIGHT" else 0.0
+                    if proposed not in ("LEFT", "RIGHT") or side_space < JEV_SIDE_CLEARANCE or not turn_clearance(scan, proposed):
+                        print("REGLA: sin lado seguro. STOP")
+                        registro.decision("regla", proposed, None, 0.0, False, "filtro_lidar", proposed)
+                        registro.cancelar_por("regla_filtro_lidar")
+                        navigation_active = False
+                        current_destination = None
+                        current_destination_name = None
+                    else:
+                        registro.decision("regla", proposed, None, 0.0, True, None, proposed)
+                        avoid_direction = proposed
+                        avoid_attempts += 1
+                        mode = MODE_AVOID_TURN
+                        avoid_started = robot.getTime()
+                        avoid_start_position = planar_position(robot_node)
+                        print("REGLA APROBADA POR LIDAR: GIRAR {}".format(avoid_direction))
+                elif (registro is not None and EXPERIMENTO["decisor"] == "sin_jev") or not JEV_ENABLED or not JEV_SDK_AVAILABLE or not os.getenv("TYPESAFE_API_KEY"):
                     print("JEV NO DISPONIBLE: STOP (se requiere Jev para la evasion en este prototipo)")
+                    if registro is not None:
+                        registro.cancelar_por("jev_no_disponible")
                     navigation_active = False
                     current_destination = None
                     current_destination_name = None
@@ -521,6 +611,7 @@ while robot.step(time_step) != -1:
                     jev_pending = True
                     jev_started_at = time.monotonic()
                     mode = MODE_JEV_WAIT
+                    jev_regla_esperada = decision_regla(scan, goal_angle, turn_clearance, choose_avoid_direction)
                     submit_jev_request(jev_request_id, distance, goal_angle, scan, current_destination_name, jev_results)
                     print("JEV CONSULTANDO | {} | destino {}".format(scan_text(scan), current_destination_name))
         elif mode == MODE_AVOID_TURN:
@@ -547,6 +638,8 @@ while robot.step(time_step) != -1:
                     print("EVASION TERMINADA: RETOMANDO {}".format(current_destination_name))
         if navigation_active and mode in (MODE_AVOID_TURN, MODE_AVOID_FOLLOW) and robot.getTime() - avoid_started > AVOID_MAX_SECONDS:
             print("EVASION SIN SALIDA EN {:.0f} s: STOP".format(AVOID_MAX_SECONDS))
+            if registro is not None:
+                registro.cancelar_por("evasion_sin_salida")
             navigation_active = False
             current_destination = None
             current_destination_name = None
@@ -557,12 +650,14 @@ while robot.step(time_step) != -1:
             print("{} | {} | Dist {:.2f} m | Ang {:.2f} rad | {}".format(current_destination_name, mode, distance, goal_angle, scan_text(scan)))
 
     # SEGURIDAD FINAL: no permitir avance si la huella frontal esta ocupada.
+    parada_seguridad = False
     if not lidar_ok:
         target_speed = 0.0
         target_omega = 0.0
     if target_speed > 0.0 and not forward_corridor_clear(scan):
         target_speed = 0.0
         target_omega = 0.0
+        parada_seguridad = True
         if step_counter % LOG_EVERY_STEPS == 0:
             print("SEGURIDAD CORREDOR: {} | STOP".format(scan_text(scan)))
     # Precaucion con rotaciones junto a maquinaria cercana.
@@ -584,6 +679,20 @@ while robot.step(time_step) != -1:
     right_speed = (target_speed + target_omega * DISTANCE_TO_CENTER) / WHEEL_RADIUS
     motor_left_wheel.setVelocity(left_speed)
     motor_right_wheel.setVelocity(right_speed)
+
+    # Experimento: medir el paso, detectar el final y cerrar la simulacion
+    if registro is not None and registro.iniciado and not registro.terminado:
+        ruta_node = destination_nodes[ord(str(EXPERIMENTO["ruta"]))]
+        registro.paso(planar_position(robot_node), scan, mode, time_step / 1000.0, parada_seguridad)
+        if not navigation_active:
+            registro.terminar("cancelada", robot.getTime(), goal_geometry(robot_node, ruta_node)[0])
+        elif robot.getTime() - registro.t_inicio_sim > EXPERIMENTO["max_sim_s"]:
+            registro.terminar("tiempo_agotado", robot.getTime(), goal_geometry(robot_node, ruta_node)[0])
+    if registro is not None and registro.terminado and not salida_enviada:
+        salida_enviada = True
+        motor_left_wheel.setVelocity(0.0)
+        motor_right_wheel.setVelocity(0.0)
+        robot.simulationQuit(0)
 
 motor_left_wheel.setVelocity(0.0)
 motor_right_wheel.setVelocity(0.0)
