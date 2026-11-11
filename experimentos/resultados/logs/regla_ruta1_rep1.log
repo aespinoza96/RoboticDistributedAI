@@ -1,0 +1,140 @@
+INFO: keyboard_conveyor_platform: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/keyboard_conveyor_platform/keyboard_conveyor_platform 0.6 0
+INFO: keyboard_control: Starting controller: /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 -u keyboard_control.py 
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 2 0
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper 3
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0.2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0.2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0 90
+To move the ConveyorPlatform with your keyboard, click first inside the simulation window and press: 
+   Belt : +/-       
+   Reset: Space bar 
+DESTINO DISPONIBLE: ENTREGA_1 -> [3.33, -3.78, -0.03]
+DESTINO DISPONIBLE: ENTREGA_2 -> [3.76, 4.31, -0.03]
+DESTINO DISPONIBLE: ENTREGA_3 -> [-3.61, 4.31, -0.03]
+
+MiR100: YOLO + LiDAR + NAVEGACION LOCAL REACTIVA
+Teclas 1/2/3: destino | 0 o ESPACIO: cancelar | Flechas: control manual
+JEV: asesor para elegir giro cuando hay obstaculos (no planificador global)
+PRECAUCION: prueba inicial en simulacion despejada, velocidad baja
+
+MODO EXPERIMENTO: decisor regla | ruta 1 | rep 1
+
+INICIANDO RUTA: ENTREGA_1
+ENTREGA_1 | GOAL | Dist 8.47 m | Ang 0.98 rad | I 1.29 DI 1.33 F 2.13 DD 5.29 D 6.22
+ENTREGA_1 | GOAL | Dist 8.47 m | Ang 0.74 rad | I 1.40 DI 1.58 F 1.88 DD 5.96 D 6.09
+ENTREGA_1 | GOAL | Dist 8.47 m | Ang 0.50 rad | I 1.52 DI 2.05 F 1.84 DD 6.12 D 4.12
+ENTREGA_1 | GOAL | Dist 8.47 m | Ang 0.26 rad | I 1.64 DI 2.51 F 1.83 DD 5.88 D 3.10
+ENTREGA_1 | GOAL | Dist 8.42 m | Ang 0.10 rad | I 1.78 DI 2.60 F 5.01 DD 5.81 D 2.76
+ENTREGA_1 | GOAL | Dist 8.20 m | Ang 0.06 rad | I 1.80 DI 3.10 F 4.84 DD 5.82 D 2.94
+ENTREGA_1 | GOAL | Dist 7.98 m | Ang 0.04 rad | I 1.81 DI 2.91 F 4.65 DD 5.82 D 3.15
+ENTREGA_1 | GOAL | Dist 7.76 m | Ang 0.02 rad | I 1.81 DI 2.70 F 4.44 DD 5.83 D 3.37
+ENTREGA_1 | GOAL | Dist 7.54 m | Ang 0.02 rad | I 1.74 DI 2.45 F 4.21 DD 5.83 D 3.60
+REGLA APROBADA POR LIDAR: GIRAR RIGHT
+ENTREGA_1 | AVOID_TURN | Dist 7.52 m | Ang 0.22 rad | I 1.60 DI 2.41 F 0.92 DD 5.92 D 4.19
+ENTREGA_1 | AVOID_TURN | Dist 7.52 m | Ang 0.46 rad | I 1.47 DI 1.52 F 0.95 DD 6.07 D 5.42
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_1 | AVOID_FOLLOW | Dist 7.49 m | Ang 0.60 rad | I 1.39 DI 1.45 F 1.00 DD 5.37 D 6.11
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_1 | AVOID_FOLLOW | Dist 7.41 m | Ang 0.56 rad | I 1.36 DI 1.35 F 1.59 DD 6.17 D 6.13
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_1 | AVOID_FOLLOW | Dist 7.33 m | Ang 0.49 rad | I 1.34 DI 1.30 F 1.52 DD 6.18 D 5.90
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_1 | AVOID_TURN | Dist 7.23 m | Ang 0.41 rad | I 1.27 DI 1.34 F 0.85 DD 6.16 D 5.44
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO
+ENTREGA_1 | AVOID_FOLLOW | Dist 7.12 m | Ang 0.33 rad | I 1.18 DI 1.65 F 1.34 DD 6.16 D 5.08
+ENTREGA_1 | AVOID_FOLLOW | Dist 7.00 m | Ang 0.24 rad | I 1.13 DI 1.82 F 1.24 DD 6.15 D 4.83
+ENTREGA_1 | AVOID_FOLLOW | Dist 6.88 m | Ang 0.18 rad | I 1.08 DI 1.72 F 1.13 DD 6.13 D 4.71
+ENTREGA_1 | AVOID_FOLLOW | Dist 6.76 m | Ang 0.13 rad | I 1.02 DI 1.63 F 1.03 DD 6.13 D 4.68
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 0.25 rad | I 0.94 DI 1.52 F 1.01 DD 6.20 D 5.20
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 0.49 rad | I 0.83 DI 1.23 F 0.91 DD 4.65 D 6.31
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 0.73 rad | I 0.72 DI 0.77 F 0.57 DD 3.80 D 6.43
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 0.97 rad | I 1.08 DI 0.63 F 0.61 DD 3.39 D 6.54
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.21 rad | I 0.98 DI 0.57 F 0.63 DD 3.25 D 6.63
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.44 rad | I 0.89 DI 0.83 F 0.50 DD 1.66 D 4.24
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.68 rad | I 0.98 DI 0.76 F 0.54 DD 1.29 D 3.91
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+ENTREGA_1 | AVOID_TURN | Dist 6.71 m | Ang 1.87 rad | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+GIRO BLOQUEADO: RIGHT | I 1.15 DI 0.71 F 0.61 DD 0.65 D 3.61
+INFO: keyboard_conveyor_platform: Terminating.
+INFO: keyboard_control: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+EVASION SIN SALIDA EN 45 s: STOP
+EXPERIMENTO TERMINADO: cancelada | regla | ruta 1 | 53.4 s
+UNSUPPORTED (log once): POSSIBLE ISSUE: unit 2 GLD_TEXTURE_INDEX_2D is unloadable and bound to sampler type (Float) - using zero texture because texture unloadable

@@ -1,0 +1,53 @@
+INFO: keyboard_conveyor_platform: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/keyboard_conveyor_platform/keyboard_conveyor_platform 0.6 0
+INFO: keyboard_control: Starting controller: /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 -u keyboard_control.py 
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 2 0
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper 3
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper
+INFO: ure_can_grasper: Starting controller: /Applications/Webots.app/Contents/projects/robots/universal_robots/controllers/ure_can_grasper/ure_can_grasper
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0.2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0.2 0
+INFO: conveyor_belt: Starting controller: /Applications/Webots.app/Contents/projects/objects/factory/conveyors/controllers/conveyor_belt/conveyor_belt 0 90
+To move the ConveyorPlatform with your keyboard, click first inside the simulation window and press: 
+   Belt : +/-       
+   Reset: Space bar 
+DESTINO DISPONIBLE: ENTREGA_1 -> [3.33, -3.78, -0.03]
+DESTINO DISPONIBLE: ENTREGA_2 -> [3.76, 4.31, -0.03]
+DESTINO DISPONIBLE: ENTREGA_3 -> [-3.61, 4.31, -0.03]
+
+MiR100: YOLO + LiDAR + NAVEGACION LOCAL REACTIVA
+Teclas 1/2/3: destino | 0 o ESPACIO: cancelar | Flechas: control manual
+JEV: asesor para elegir giro cuando hay obstaculos (no planificador global)
+PRECAUCION: prueba inicial en simulacion despejada, velocidad baja
+
+MODO EXPERIMENTO: decisor jev | ruta 1 | rep 6
+
+INICIANDO RUTA: ENTREGA_1
+ENTREGA_1 | GOAL | Dist 8.57 m | Ang 1.91 rad | I 1.39 DI 0.78 F 0.77 DD 1.53 D 5.58
+ENTREGA_1 | GOAL | Dist 8.57 m | Ang 1.67 rad | I 1.09 DI 0.81 F 0.84 DD 2.47 D 6.19
+ENTREGA_1 | GOAL | Dist 8.57 m | Ang 1.43 rad | I 0.99 DI 0.87 F 0.99 DD 3.53 D 6.80
+ENTREGA_1 | GOAL | Dist 8.57 m | Ang 1.20 rad | I 0.98 DI 0.95 F 1.29 DD 5.14 D 6.57
+ENTREGA_1 | GOAL | Dist 8.57 m | Ang 0.96 rad | I 1.04 DI 1.09 F 2.10 DD 5.45 D 6.47
+ENTREGA_1 | GOAL | Dist 8.57 m | Ang 0.72 rad | I 1.16 DI 1.35 F 2.06 DD 6.34 D 5.48
+ENTREGA_1 | GOAL | Dist 8.57 m | Ang 0.48 rad | I 1.27 DI 1.77 F 2.01 DD 6.31 D 3.63
+ENTREGA_1 | GOAL | Dist 8.57 m | Ang 0.24 rad | I 1.41 DI 2.43 F 1.99 DD 6.13 D 2.81
+ENTREGA_1 | GOAL | Dist 8.49 m | Ang 0.10 rad | I 1.53 DI 2.59 F 1.93 DD 6.07 D 2.61
+ENTREGA_1 | GOAL | Dist 8.27 m | Ang 0.06 rad | I 1.56 DI 2.78 F 1.72 DD 6.06 D 2.79
+ENTREGA_1 | GOAL | Dist 8.05 m | Ang 0.04 rad | I 1.58 DI 2.92 F 1.51 DD 6.07 D 3.00
+ENTREGA_1 | GOAL | Dist 7.83 m | Ang 0.02 rad | I 1.59 DI 2.71 F 1.30 DD 6.06 D 3.22
+ENTREGA_1 | GOAL | Dist 7.61 m | Ang 0.02 rad | I 1.58 DI 2.49 F 1.10 DD 6.06 D 3.45
+JEV CONSULTANDO | I 1.53 DI 2.38 F 0.99 DD 6.06 D 3.57 | destino ENTREGA_1
+INFO: keyboard_conveyor_platform: Terminating.
+INFO: keyboard_control: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: ure_can_grasper: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+INFO: conveyor_belt: Terminating.
+JEV RESPUESTA: RIGHT | confianza 0.30
+JEV: decision rechazada por seguridad o baja confianza. STOP
+EXPERIMENTO TERMINADO: cancelada | jev | ruta 1 | 13.0 s
+UNSUPPORTED (log once): POSSIBLE ISSUE: unit 2 GLD_TEXTURE_INDEX_2D is unloadable and bound to sampler type (Float) - using zero texture because texture unloadable
