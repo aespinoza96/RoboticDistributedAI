@@ -4,9 +4,6 @@ import numpy as np
 import cv2
 import math
 import os
-import threading
-import queue
-import time
 
 
 def load_env_file():
@@ -36,12 +33,6 @@ def load_env_file():
 
 
 load_env_file()
-
-try:
-    from typesafe_sdk import TypeSafeClient, Choice
-    JEV_SDK_AVAILABLE = True
-except ImportError:
-    JEV_SDK_AVAILABLE = False
 
 # ===================================================
 # CONFIGURACION - AJUSTAR EN TU ESCENARIO
@@ -85,11 +76,6 @@ YOLO_EVERY_N_STEPS = 3
 PERSON_CLEAR_DETECTIONS = 5       # 5 inferencias seguidas sin persona antes de reanudar.
 LOG_EVERY_STEPS = 30
 
-# JEV (TypeSafe): asesor de decisiones, nunca control directo de motores.
-JEV_ENABLED = True
-JEV_MIN_CONFIDENCE = 0.60
-JEV_REQUEST_TIMEOUT = 8.0      # Segundos de reloj real, sin bloquear Webots.
-JEV_SIDE_CLEARANCE = 0.80      # Verificar con el ancho y volumen del robot.
 SAFE_DISTANCE_SIDE = 0.60      # Margen inicial conservador; calibrar para el robot.
 SAFE_DISTANCE_DIAGONAL = 0.95  # No atravesar esquinas de maquinaria.
 TURN_CLEARANCE_MIN = 0.65      # Distancia lateral minima para permitir una rotacion.
@@ -100,7 +86,6 @@ MODE_GOAL = "GOAL"
 MODE_AVOID_TURN = "AVOID_TURN"
 MODE_AVOID_FOLLOW = "AVOID_FOLLOW"
 MODE_WAIT_PERSON = "WAIT_PERSON"
-MODE_JEV_WAIT = "JEV_WAIT"
 
 # ===================================================
 # FUNCIONES
@@ -206,12 +191,16 @@ def scan_text(scan):
     return "I {:.2f} DI {:.2f} F {:.2f} DD {:.2f} D {:.2f}".format(scan["left"], scan["front_left"], scan["front"], scan["front_right"], scan["right"])
 
 
-def choose_avoid_direction(left, right):
-    if left < SIDE_MIN_DISTANCE and right < SIDE_MIN_DISTANCE:
+def choose_avoid_direction(scan):
+    # Regla local: solo lados con espacio para girar (costado Y diagonal);
+    # entre ellos, el que tenga mas espacio libre. None si ninguno sirve.
+    candidates = []
+    for direction, side, diagonal in (("LEFT", "left", "front_left"), ("RIGHT", "right", "front_right")):
+        if turn_clearance(scan, direction) and scan[side] >= SIDE_MIN_DISTANCE:
+            candidates.append((min(scan[side], scan[diagonal]), direction))
+    if not candidates:
         return None
-    if left >= right:
-        return "LEFT"
-    return "RIGHT"
+    return max(candidates)[1]
 
 
 def follow_side_omega(direction, left, right, goal_angle):
@@ -225,47 +214,6 @@ def follow_side_omega(direction, left, right, goal_angle):
     # Pequeno sesgo hacia el objetivo; el LiDAR sigue siendo prioritario.
     omega += 0.05 * clamp(goal_angle, -1.0, 1.0)
     return clamp(omega, -NAVIGATION_TURN_SPEED, NAVIGATION_TURN_SPEED)
-
-
-# ===================================================
-# CONSULTAS JEV EN SEGUNDO HILO (SIN ACCESO A WEBOTS EN EL HILO)
-# ===================================================
-def ask_jev_worker(request_id, observation, response_queue):
-    try:
-        with TypeSafeClient(model="jev-latest") as client:
-            response = client.system_one(state=observation, questions={
-                "avoid_action": Choice(instructions="Recommend one short exploratory turn, not a complete route. Prefer the side with adequate side AND forward-diagonal clearance. Use STOP if no safe candidate exists or observations are uncertain. The robot safety controller has final authority; your recommendation never bypasses safety constraints.", criteria={
-                    "LEFT": "Turn in place left to search for a free path, only if the measured left sector provides adequate clearance",
-                    "RIGHT": "Turn in place right to search for a free path, only if the measured right sector provides adequate clearance",
-                    "STOP": "Stop because both sides are narrow, a person is present, or measurements are too uncertain"
-                })
-            })
-        answer = response.choices["avoid_action"]
-        response_queue.put((request_id, str(answer.choice).upper(), float(answer.confidence), None))
-    except Exception as error:
-        response_queue.put((request_id, None, 0.0, "{}: {}".format(type(error).__name__, error)))
-
-
-def submit_jev_request(request_id, distance, angle, scan, destination, response_queue):
-    observation = {
-        "robot": "MiR100 differential drive in Webots",
-        "destination": destination,
-        "goal_distance_m": round(distance, 2),
-        "goal_angle_rad": round(angle, 3),
-        "left_clearance_m": round(scan["left"], 2),
-        "front_left_clearance_m": round(scan["front_left"], 2),
-        "front_clearance_m": round(scan["front"], 2),
-        "front_right_clearance_m": round(scan["front_right"], 2),
-        "right_clearance_m": round(scan["right"], 2),
-        "safe_left_turn": turn_clearance(scan, "LEFT"),
-        "safe_right_turn": turn_clearance(scan, "RIGHT"),
-        "minimum_side_clearance_m": JEV_SIDE_CLEARANCE,
-        "front_safety_distance_m": SAFE_DISTANCE_FRONT,
-        "observation": "Static industrial machinery obstructs forward progress. Need a short local maneuver. A side reading does not prove a traversable corridor.",
-        "person_detected": False
-    }
-    thread = threading.Thread(target=ask_jev_worker, args=(request_id, observation, response_queue), daemon=True)
-    thread.start()
 
 
 # ===================================================
@@ -323,20 +271,10 @@ avoid_started = 0.0
 avoid_start_position = None
 manual_speed = 0.0
 manual_omega = 0.0
-jev_results = queue.Queue()
-jev_request_id = 0
-jev_started_at = 0.0
-jev_pending = False
-jev_blocked_reason = None
-
-if JEV_ENABLED and not JEV_SDK_AVAILABLE:
-    print("ADVERTENCIA: instala typesafe-sdk en el Python de Webots. Sin Jev, los destinos se detendran ante obstaculos.")
-if JEV_ENABLED and not os.getenv("TYPESAFE_API_KEY"):
-    print("ADVERTENCIA: falta TYPESAFE_API_KEY. Se detendra ante obstaculos.")
 
 print("\nMiR100: YOLO + LiDAR + NAVEGACION LOCAL REACTIVA")
 print("Teclas 1/2/3: destino | 0 o ESPACIO: cancelar | Flechas: control manual")
-print("JEV: asesor para elegir giro cuando hay obstaculos (no planificador global)")
+print("Evasion: regla local con LiDAR (lado con mas espacio libre)")
 print("PRECAUCION: prueba inicial en simulacion despejada, velocidad baja\n")
 
 # ===================================================
@@ -388,8 +326,6 @@ while robot.step(time_step) != -1:
         key = next_key
 
     if key in destination_nodes:
-        jev_request_id += 1
-        jev_pending = False
         current_destination = destination_nodes[key]
         current_destination_name = DESTINATIONS[key]
         navigation_active = True
@@ -400,8 +336,6 @@ while robot.step(time_step) != -1:
         manual_omega = 0.0
         print("\nINICIANDO RUTA: {}".format(current_destination_name))
     elif key == ord("0") or key == ord(" "):
-        jev_request_id += 1
-        jev_pending = False
         navigation_active = False
         current_destination = None
         current_destination_name = None
@@ -456,44 +390,6 @@ while robot.step(time_step) != -1:
             target_omega = 0.0
             if step_counter % LOG_EVERY_STEPS == 0:
                 print("SEGURIDAD: LiDAR sin lecturas suficientes, STOP")
-        elif mode == MODE_JEV_WAIT:
-            # En espera de red: motores inmoviles y sin bloquear robot.step().
-            target_speed = 0.0
-            target_omega = 0.0
-            decision = None
-            while not jev_results.empty():
-                result = jev_results.get_nowait()
-                if result[0] == jev_request_id:
-                    decision = result
-            if decision is not None:
-                jev_pending = False
-                _, proposed, confidence, error = decision
-                if error is not None:
-                    print("JEV ERROR: {} | STOP".format(error))
-                else:
-                    print("JEV RESPUESTA: {} | confianza {:.2f}".format(proposed, confidence))
-                side_space = left_distance if proposed == "LEFT" else right_distance if proposed == "RIGHT" else 0.0
-                if error is not None or confidence < JEV_MIN_CONFIDENCE or proposed not in ("LEFT", "RIGHT") or side_space < JEV_SIDE_CLEARANCE or not turn_clearance(scan, proposed):
-                    print("JEV: decision rechazada por seguridad o baja confianza. STOP")
-                    navigation_active = False
-                    current_destination = None
-                    current_destination_name = None
-                    mode = MODE_GOAL
-                else:
-                    avoid_direction = proposed
-                    avoid_attempts += 1
-                    mode = MODE_AVOID_TURN
-                    avoid_started = robot.getTime()
-                    avoid_start_position = planar_position(robot_node)
-                    print("JEV APROBADO POR LIDAR: GIRAR {}".format(avoid_direction))
-            elif time.monotonic() - jev_started_at >= JEV_REQUEST_TIMEOUT:
-                jev_pending = False
-                jev_request_id += 1  # Descartar respuesta tardia.
-                print("JEV TIMEOUT: STOP (sin decision vigente)")
-                navigation_active = False
-                current_destination = None
-                current_destination_name = None
-                mode = MODE_GOAL
         elif mode == MODE_GOAL:
             # Girar hacia destino sin avanzar hasta que este orientado.
             if abs(goal_angle) > NAVIGATION_ANGLE_TOLERANCE:
@@ -503,26 +399,22 @@ while robot.step(time_step) != -1:
                 target_speed = min(NAVIGATION_SPEED, max(0.06, 0.5 * distance))
                 target_omega = clamp(goal_angle * 0.5, -NAVIGATION_TURN_SPEED, NAVIGATION_TURN_SPEED)
             else:
-                # Obstruccion: Jev puede recomendar un giro, pero no ejecuta motores.
+                # Obstruccion: la regla local elige el lado; la capa de seguridad sigue al final.
                 target_speed = 0.0
                 target_omega = 0.0
-                if avoid_attempts >= MAX_AVOID_ATTEMPTS or not (turn_clearance(scan, "LEFT") or turn_clearance(scan, "RIGHT")):
+                direction = choose_avoid_direction(scan)
+                if avoid_attempts >= MAX_AVOID_ATTEMPTS or direction is None:
                     print("NO HAY ESPACIO LATERAL SUFICIENTE / LIMITE DE EVASIONES: STOP")
                     navigation_active = False
                     current_destination = None
                     current_destination_name = None
-                elif not JEV_ENABLED or not JEV_SDK_AVAILABLE or not os.getenv("TYPESAFE_API_KEY"):
-                    print("JEV NO DISPONIBLE: STOP (se requiere Jev para la evasion en este prototipo)")
-                    navigation_active = False
-                    current_destination = None
-                    current_destination_name = None
                 else:
-                    jev_request_id += 1
-                    jev_pending = True
-                    jev_started_at = time.monotonic()
-                    mode = MODE_JEV_WAIT
-                    submit_jev_request(jev_request_id, distance, goal_angle, scan, current_destination_name, jev_results)
-                    print("JEV CONSULTANDO | {} | destino {}".format(scan_text(scan), current_destination_name))
+                    avoid_direction = direction
+                    avoid_attempts += 1
+                    mode = MODE_AVOID_TURN
+                    avoid_started = robot.getTime()
+                    avoid_start_position = planar_position(robot_node)
+                    print("OBSTACULO: GIRAR {} | {} | destino {}".format(avoid_direction, scan_text(scan), current_destination_name))
         elif mode == MODE_AVOID_TURN:
             target_speed = 0.0
             target_omega = AVOID_TURN_SPEED if avoid_direction == "LEFT" else -AVOID_TURN_SPEED
