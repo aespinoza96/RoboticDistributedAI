@@ -18,10 +18,16 @@ mir100/                                  Webots project root (open this in Webot
 ├── controllers/
 │   ├── keyboard_control/
 │   │   ├── keyboard_control.py          MAIN controller (the one that matters)
+│   │   ├── puente.py                    Command bridge: local TCP server, JSON lines
 │   │   └── yolo11n.pt                   YOLO11 nano weights (COCO), loaded by name
 │   ├── keyboard_matlab/keyboard_matlab.m  Leftover stock Webots MATLAB keyboard teleop (unused)
 │   └── Makefile                         Stock Webots Makefile (not needed for Python)
 └── webots.yaml
+agente/
+├── robot_cliente.py                     Python client for the bridge (used by MCP/agent later)
+└── cli.py                               Manual bridge testing from a terminal, no AI
+tests/test_puente.py                     Bridge + client tests, no Webots needed
+docs/mejoras-y-futuro.md                 Roadmap (Spanish)
 ```
 
 ## The world (`mir100.wbt`)
@@ -66,6 +72,34 @@ Runs one `robot.step()` loop. Each step:
    reverse if `back` is too close, full stop on a person or bad LiDAR.
 6. Differential drive: `(v ∓ ω·DISTANCE_TO_CENTER) / WHEEL_RADIUS` (left / right).
 
+### Tasks and the command bridge
+
+Every order (keyboard `1/2/3` or bridge) is a **task** that always ends explicitly with
+`estado` = `exito` / `fallo` / `cancelada` and a machine-readable `motivo`, plus a
+`detalle` text and a `contexto` snapshot (pose, mode, LiDAR sectors, person). A new
+order cancels the current task (`motivo: reemplazada`).
+
+`puente.py` listens on `127.0.0.1:5555` (`MIR_PUENTE_PUERTO` overrides). One JSON object
+per line. `bridge.poll()` runs once per `robot.step()` in the main loop; nothing blocks
+and no other thread touches Webots.
+
+- Request `{"id": 1, "cmd": "ir_a", "args": {"destino": "ENTREGA_3"}}` →
+  `{"tipo": "respuesta", "id": 1, "ok": true, "resultado": {...}}` (or `ok: false`, `error`).
+- Commands: `estado`, `destinos`, `escanear`, `ir_a(destino)`, `girar(grados)` (+ = left,
+  max 180), `avanzar(metros)` (negative = reverse, max 1.0), `parar`. Movement commands
+  return a `tarea_id` immediately; the result arrives as an event.
+- Events `{"tipo": "evento", "evento": ..., "t": sim_seconds, "datos": {...}}` go to all
+  clients: `tarea_iniciada`, `tarea_terminada`, `evasion_iniciada`, `evasion_terminada`,
+  `persona_detectada`, `persona_despejada`, `persona_bloqueando` (warning only, after
+  `PERSONA_BLOQUEANDO_SEGUNDOS`), `lidar_sin_datos`.
+- Failure reasons (`motivo`): `sin_espacio_lateral`, `limite_evasiones`,
+  `evasion_sin_salida`, `sin_progreso` (watchdog: navigating without moving
+  `SIN_PROGRESO_DISTANCIA` in `SIN_PROGRESO_SEGUNDOS`), `lidar_sin_datos`,
+  `maniobra_bloqueada` (the safety layer blocked a maneuver; `detalle` names the rule),
+  `tiempo_agotado`. Success: `llego`, `maniobra_completa`.
+- Maneuvers go through the same final safety layer as everything else. Waiting for a
+  person pauses the maneuver timer and the progress watchdog.
+
 ### Design principles (keep these intact)
 
 - **Any future AI is an advisor, never a motor controller.** It may pick tasks or
@@ -93,10 +127,14 @@ should be tuned to the robot's real footprint. LiDAR sector fractions in
 3. Optional: API keys for future AI features go in the repo-root `.env` (gitignored).
    `load_env_file()` in the controller loads it at startup without overriding
    variables already set in the environment. Nothing needs a key today.
-4. Click inside the 3D view, then press `1`, `2` or `3`.
+4. Click inside the 3D view, then press `1`, `2` or `3`, or drive it through the bridge:
+   `python3 agente/cli.py ir_a destino=ENTREGA_3 --esperar` (see `agente/cli.py`).
 
-There are no automated tests. Verify behavior by running the simulation and reading the
-Webots console.
+Tests (no Webots): `python3 -m unittest discover -s tests -v`. Controller behavior is
+verified by running the simulation and reading the Webots console. Headless run for
+testing: `MIR_PUENTE_PUERTO=5560 /Applications/Webots.app/Contents/MacOS/webots --batch
+--mode=fast --minimize --no-rendering --stdout --stderr --port=1240 mir100/worlds/mir100.wbt`
+(a separate port pair avoids clashing with an open Webots).
 
 ## Notes / gotchas
 

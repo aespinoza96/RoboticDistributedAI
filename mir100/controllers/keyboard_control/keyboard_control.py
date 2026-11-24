@@ -34,6 +34,8 @@ def load_env_file():
 
 load_env_file()
 
+from puente import PuenteComandos  # noqa: E402  (mismo directorio del controlador)
+
 # ===================================================
 # CONFIGURACION - AJUSTAR EN TU ESCENARIO
 # ===================================================
@@ -81,6 +83,24 @@ SAFE_DISTANCE_DIAGONAL = 0.95  # No atravesar esquinas de maquinaria.
 TURN_CLEARANCE_MIN = 0.65      # Distancia lateral minima para permitir una rotacion.
 LIDAR_UNKNOWN_IS_BLOCKED = True
 LOG_SECTOR_INTERVAL = 30
+
+# Puente de comandos (agente / MCP): TCP local, JSON por linea. Ver puente.py.
+PUENTE_ACTIVO = True
+PUENTE_PUERTO = int(os.getenv("MIR_PUENTE_PUERTO", "5555"))
+
+# Vigilancia de tareas: convierte bloqueos silenciosos en fallos con motivo.
+SIN_PROGRESO_SEGUNDOS = 40.0       # Navegando sin moverse SIN_PROGRESO_DISTANCIA en este tiempo = fallo.
+SIN_PROGRESO_DISTANCIA = 0.10
+LIDAR_SIN_DATOS_SEGUNDOS = 10.0    # LiDAR sin lecturas suficientes durante una tarea = fallo.
+PERSONA_BLOQUEANDO_SEGUNDOS = 15.0 # Aviso (no fallo) si una persona frena la tarea tanto tiempo.
+
+# Maniobras cortas pedidas por el agente; la capa de seguridad sigue aplicando.
+MANIOBRA_MAX_GRADOS = 180.0
+MANIOBRA_MAX_METROS = 1.0
+MANIOBRA_VELOCIDAD = 0.12
+MANIOBRA_GIRO = 0.25
+MANIOBRA_TIEMPO_MAX = 30.0
+MANIOBRA_BLOQUEO_SEGUNDOS = 3.0    # Seguridad bloqueando la maniobra este tiempo = fallo.
 
 MODE_GOAL = "GOAL"
 MODE_AVOID_TURN = "AVOID_TURN"
@@ -216,6 +236,41 @@ def follow_side_omega(direction, left, right, goal_angle):
     return clamp(omega, -NAVIGATION_TURN_SPEED, NAVIGATION_TURN_SPEED)
 
 
+def planar_forward(node):
+    # Vector unitario del frente del robot proyectado en el plano del suelo.
+    up = axis_vector("+" + WORLD_UP_AXIS)
+    orientation = np.array(node.getOrientation(), dtype=float).reshape((3, 3))
+    forward = orientation.dot(axis_vector(ROBOT_FORWARD_AXIS))
+    forward -= np.dot(forward, up) * up
+    norm = float(np.linalg.norm(forward))
+    return forward / norm if norm > 0.0001 else forward
+
+
+def heading_delta(previous_forward, forward):
+    # Angulo con signo (rad, + = izquierda) entre dos orientaciones consecutivas.
+    up = axis_vector("+" + WORLD_UP_AXIS)
+    return math.atan2(float(np.dot(up, np.cross(previous_forward, forward))), float(np.dot(previous_forward, forward)))
+
+
+def robot_yaw_degrees(node):
+    forward = planar_forward(node)
+    if WORLD_UP_AXIS == "Z":
+        return math.degrees(math.atan2(forward[1], forward[0]))
+    if WORLD_UP_AXIS == "Y":
+        return math.degrees(math.atan2(-forward[2], forward[0]))
+    return math.degrees(math.atan2(forward[0], forward[1]))
+
+
+def normalize_destination(value, names):
+    # Acepta "ENTREGA_3", "entrega 3", "Entrega-3", "3" o 3.
+    text = str(value).strip().upper().replace(" ", "_").replace("-", "_")
+    if text in names:
+        return text
+    if text.isdigit() and "ENTREGA_{}".format(text) in names:
+        return "ENTREGA_{}".format(text)
+    return None
+
+
 # ===================================================
 # INICIALIZACION
 # ===================================================
@@ -271,6 +326,169 @@ avoid_started = 0.0
 avoid_start_position = None
 manual_speed = 0.0
 manual_omega = 0.0
+scan = {"left": 0.0, "front_left": 0.0, "front": 0.0, "front_right": 0.0, "right": 0.0, "back": 0.0, "ok": False}
+
+# Tareas: cada orden (teclado o puente) es una tarea con un final explicito:
+# estado "exito", "fallo" o "cancelada", y un motivo legible por el agente.
+task = None
+last_task = None
+task_counter = 0
+maneuver = None
+safety_block = None
+progress_position = None
+progress_time = 0.0
+lidar_bad_since = None
+person_since = None
+person_warned = False
+
+destination_by_name = {DESTINATIONS[key]: node for key, node in destination_nodes.items()}
+
+bridge = None
+if PUENTE_ACTIVO:
+    try:
+        bridge = PuenteComandos(puerto=PUENTE_PUERTO)
+        print("PUENTE DE COMANDOS: escuchando en 127.0.0.1:{}".format(bridge.puerto))
+    except OSError as error:
+        print("ADVERTENCIA: no se pudo abrir el puente en el puerto {} ({}). Solo teclado.".format(PUENTE_PUERTO, error))
+
+
+def emit(event, data=None):
+    if bridge is not None:
+        bridge.emitir(event, robot.getTime(), data)
+
+
+def robot_context():
+    position = planar_position(robot_node)
+    context = {
+        "posicion": [round(float(position[0]), 2), round(float(position[1]), 2)],
+        "orientacion_grados": round(robot_yaw_degrees(robot_node), 1),
+        "modo": mode,
+        "navegando": navigation_active,
+        "destino": current_destination_name,
+        "lidar": {k: round(scan[k], 2) for k in ("left", "front_left", "front", "front_right", "right", "back")},
+        "lidar_ok": scan["ok"],
+        "persona_detectada": person_detected,
+    }
+    if current_destination is not None:
+        context["distancia_destino"] = round(goal_geometry(robot_node, current_destination)[0], 2)
+    return context
+
+
+def start_task(kind, args, origin):
+    global task, task_counter
+    if task is not None:
+        finish_task("cancelada", "reemplazada", "Una nueva orden ({}) reemplazo a esta tarea".format(kind))
+    task_counter += 1
+    task = {"tarea_id": task_counter, "tipo": kind, "args": args, "origen": origin, "estado": "en_curso", "inicio": round(robot.getTime(), 2)}
+    emit("tarea_iniciada", dict(task))
+    return task_counter
+
+
+def finish_task(state, reason, detail=""):
+    # Cierra la tarea en curso y avisa a los clientes con el contexto completo.
+    global task, last_task
+    if task is None:
+        return
+    task.update({"estado": state, "motivo": reason, "detalle": detail, "fin": round(robot.getTime(), 2), "contexto": robot_context()})
+    last_task = task
+    task = None
+    print("TAREA {} {}: {} | {}".format(last_task["tarea_id"], state.upper(), reason, detail))
+    emit("tarea_terminada", dict(last_task))
+
+
+def stop_navigation():
+    global navigation_active, current_destination, current_destination_name, mode, manual_speed, manual_omega
+    navigation_active = False
+    current_destination = None
+    current_destination_name = None
+    mode = MODE_GOAL
+    manual_speed = 0.0
+    manual_omega = 0.0
+
+
+def start_navigation(name):
+    global navigation_active, current_destination, current_destination_name, mode, saved_mode
+    global avoid_attempts, manual_speed, manual_omega, maneuver, progress_position, progress_time, lidar_bad_since
+    maneuver = None
+    lidar_bad_since = None
+    current_destination = destination_by_name[name]
+    current_destination_name = name
+    navigation_active = True
+    mode = MODE_WAIT_PERSON if person_detected else MODE_GOAL
+    saved_mode = MODE_GOAL
+    avoid_attempts = 0
+    manual_speed = 0.0
+    manual_omega = 0.0
+    progress_position = planar_position(robot_node)
+    progress_time = robot.getTime()
+    print("\nINICIANDO RUTA: {}".format(name))
+
+
+def start_maneuver(kind, amount):
+    global maneuver, manual_speed, manual_omega
+    stop_navigation()
+    manual_speed = 0.0
+    manual_omega = 0.0
+    maneuver = {"tipo": kind, "objetivo": amount, "hecho": 0.0, "inicio": robot.getTime(),
+                "posicion_inicial": planar_position(robot_node), "frente_previo": planar_forward(robot_node),
+                "bloqueado_desde": None}
+
+
+def handle_command(client, message):
+    global maneuver
+    cmd = message["cmd"]
+    args = message.get("args", {})
+    request_id = message.get("id")
+
+    def ok(result=None):
+        bridge.responder(client, request_id, True, result)
+
+    def fail(error):
+        bridge.responder(client, request_id, False, error=error)
+
+    try:
+        if cmd == "estado":
+            ok({"contexto": robot_context(), "tarea": task, "ultima_tarea": last_task,
+                "maniobra": None if maneuver is None else {"tipo": maneuver["tipo"], "objetivo": maneuver["objetivo"], "hecho": round(maneuver["hecho"], 3)}})
+        elif cmd == "destinos":
+            here = planar_position(robot_node)
+            ok({"destinos": [{"nombre": name, "posicion": [round(float(p[0]), 2), round(float(p[1]), 2)],
+                              "distancia": round(float(np.linalg.norm(p - here)), 2)}
+                             for name, p in ((n, planar_position(node)) for n, node in destination_by_name.items())]})
+        elif cmd == "escanear":
+            ok({"lidar": {k: round(scan[k], 2) for k in ("left", "front_left", "front", "front_right", "right", "back")},
+                "lidar_ok": scan["ok"], "frente_libre": forward_corridor_clear(scan),
+                "puede_girar_izquierda": turn_clearance(scan, "LEFT"), "puede_girar_derecha": turn_clearance(scan, "RIGHT"),
+                "lado_sugerido_para_evadir": choose_avoid_direction(scan), "persona_detectada": person_detected,
+                "nota": "Distancias en metros; 0.0 = sin lecturas validas (se trata como bloqueado)."})
+        elif cmd == "ir_a":
+            name = normalize_destination(args.get("destino", ""), destination_by_name)
+            if name is None:
+                fail("Destino desconocido '{}'. Disponibles: {}".format(args.get("destino"), ", ".join(sorted(destination_by_name))))
+                return
+            task_id = start_task("ir_a", {"destino": name}, "puente")
+            start_navigation(name)
+            ok({"tarea_id": task_id, "destino": name})
+        elif cmd in ("girar", "avanzar"):
+            key, limit = ("grados", MANIOBRA_MAX_GRADOS) if cmd == "girar" else ("metros", MANIOBRA_MAX_METROS)
+            amount = float(args.get(key, 0.0))
+            if amount == 0.0 or abs(amount) > limit:
+                fail("'{}' debe ser distinto de 0 y como maximo {} en valor absoluto".format(key, limit))
+                return
+            task_id = start_task(cmd, {key: amount}, "puente")
+            start_maneuver(cmd, math.radians(amount) if cmd == "girar" else amount)
+            ok({"tarea_id": task_id, key: amount})
+        elif cmd == "parar":
+            had_task = task is not None
+            finish_task("cancelada", "parar", "Cancelada por orden 'parar'")
+            stop_navigation()
+            maneuver = None
+            ok({"detenido": True, "habia_tarea": had_task})
+        else:
+            fail("Comando desconocido '{}'. Comandos: estado, destinos, escanear, ir_a, girar, avanzar, parar".format(cmd))
+    except (TypeError, ValueError) as error:
+        fail("Argumentos invalidos para '{}': {}".format(cmd, error))
+
 
 print("\nMiR100: YOLO + LiDAR + NAVEGACION LOCAL REACTIVA")
 print("Teclas 1/2/3: destino | 0 o ESPACIO: cancelar | Flechas: control manual")
@@ -326,24 +544,14 @@ while robot.step(time_step) != -1:
         key = next_key
 
     if key in destination_nodes:
-        current_destination = destination_nodes[key]
-        current_destination_name = DESTINATIONS[key]
-        navigation_active = True
-        mode = MODE_WAIT_PERSON if person_detected else MODE_GOAL
-        saved_mode = MODE_GOAL
-        avoid_attempts = 0
-        manual_speed = 0.0
-        manual_omega = 0.0
-        print("\nINICIANDO RUTA: {}".format(current_destination_name))
+        start_task("ir_a", {"destino": DESTINATIONS[key]}, "teclado")
+        start_navigation(DESTINATIONS[key])
     elif key == ord("0") or key == ord(" "):
-        navigation_active = False
-        current_destination = None
-        current_destination_name = None
-        mode = MODE_GOAL
-        manual_speed = 0.0
-        manual_omega = 0.0
+        finish_task("cancelada", "teclado", "Cancelada con la tecla 0/Espacio")
+        stop_navigation()
+        maneuver = None
         print("NAVEGACION CANCELADA: STOP")
-    elif not navigation_active:
+    elif not navigation_active and maneuver is None:
         if key == Keyboard.UP:
             manual_speed = min(SPEED_MAX, manual_speed + SPEED_INCREMENT)
         elif key == Keyboard.DOWN:
@@ -353,8 +561,14 @@ while robot.step(time_step) != -1:
         elif key == Keyboard.RIGHT:
             manual_omega = max(-ANGULAR_SPEED_MAX, manual_omega - ANGULAR_SPEED_INCREMENT)
 
-    target_speed = manual_speed if not navigation_active else 0.0
-    target_omega = manual_omega if not navigation_active else 0.0
+    # Ordenes del puente (agente / MCP). Se procesan aqui, en el hilo de Webots.
+    if bridge is not None:
+        for client, message in bridge.poll():
+            handle_command(client, message)
+
+    now = robot.getTime()
+    target_speed = manual_speed if not navigation_active and maneuver is None else 0.0
+    target_omega = manual_omega if not navigation_active and maneuver is None else 0.0
 
     # Persona: se conservan los datos de evasion, se frena y se reanuda despues.
     if person_detected and mode != MODE_WAIT_PERSON:
@@ -362,32 +576,51 @@ while robot.step(time_step) != -1:
         mode = MODE_WAIT_PERSON
         manual_speed = 0.0
         manual_omega = 0.0
+        person_since = now
+        person_warned = False
         print("PERSONA DETECTADA (confianza {:.2f}): STOP".format(person_confidence))
+        if task is not None:
+            emit("persona_detectada", {"tarea_id": task["tarea_id"], "confianza": round(person_confidence, 2)})
 
     if mode == MODE_WAIT_PERSON:
         target_speed = 0.0
         target_omega = 0.0
+        # No cuenta como falta de progreso ni consume el tiempo de una maniobra.
+        progress_position = planar_position(robot_node)
+        progress_time = now
+        if maneuver is not None:
+            maneuver["inicio"] += time_step / 1000.0
+        if task is not None and not person_warned and person_since is not None and now - person_since > PERSONA_BLOQUEANDO_SEGUNDOS:
+            person_warned = True
+            emit("persona_bloqueando", {"tarea_id": task["tarea_id"], "segundos": round(now - person_since, 1),
+                                        "detalle": "Una persona frena la tarea; el robot sigue esperando. Se puede esperar mas o cancelar."})
         if not person_detected and person_clear_count >= PERSON_CLEAR_DETECTIONS:
             mode = saved_mode
             if mode in (MODE_AVOID_TURN, MODE_AVOID_FOLLOW):
-                avoid_started = robot.getTime()
+                avoid_started = now
             print("PERSONA DESPEJADA: REANUDANDO")
+            if task is not None:
+                emit("persona_despejada", {"tarea_id": task["tarea_id"]})
 
     elif navigation_active and current_destination is not None:
         distance, goal_angle = goal_geometry(robot_node, current_destination)
+        if lidar_ok:
+            lidar_bad_since = None
         if distance <= ARRIVAL_DISTANCE:
             print("\nDESTINO ALCANZADO: {} | Distancia {:.2f} m".format(current_destination_name, distance))
-            navigation_active = False
-            current_destination = None
-            current_destination_name = None
-            mode = MODE_GOAL
-            manual_speed = 0.0
-            manual_omega = 0.0
+            finish_task("exito", "llego", "Llego a {} (a {:.2f} m)".format(current_destination_name, distance))
+            stop_navigation()
             target_speed = 0.0
             target_omega = 0.0
         elif not lidar_ok:
             target_speed = 0.0
             target_omega = 0.0
+            if lidar_bad_since is None:
+                lidar_bad_since = now
+                emit("lidar_sin_datos", {"tarea_id": task["tarea_id"] if task else None, "lidar": {k: round(scan[k], 2) for k in ("left", "front_left", "front", "front_right", "right", "back")}})
+            elif now - lidar_bad_since > LIDAR_SIN_DATOS_SEGUNDOS:
+                finish_task("fallo", "lidar_sin_datos", "El LiDAR no da lecturas suficientes desde hace {:.0f} s; sin datos se considera bloqueado".format(now - lidar_bad_since))
+                stop_navigation()
             if step_counter % LOG_EVERY_STEPS == 0:
                 print("SEGURIDAD: LiDAR sin lecturas suficientes, STOP")
         elif mode == MODE_GOAL:
@@ -403,11 +636,14 @@ while robot.step(time_step) != -1:
                 target_speed = 0.0
                 target_omega = 0.0
                 direction = choose_avoid_direction(scan)
-                if avoid_attempts >= MAX_AVOID_ATTEMPTS or direction is None:
-                    print("NO HAY ESPACIO LATERAL SUFICIENTE / LIMITE DE EVASIONES: STOP")
-                    navigation_active = False
-                    current_destination = None
-                    current_destination_name = None
+                if avoid_attempts >= MAX_AVOID_ATTEMPTS:
+                    print("LIMITE DE EVASIONES: STOP")
+                    finish_task("fallo", "limite_evasiones", "Obstaculo al frente tras {} evasiones; distancia al destino {:.2f} m | {}".format(avoid_attempts, distance, scan_text(scan)))
+                    stop_navigation()
+                elif direction is None:
+                    print("NO HAY ESPACIO LATERAL SUFICIENTE: STOP")
+                    finish_task("fallo", "sin_espacio_lateral", "Obstaculo al frente y ningun lado con espacio para girar | {}".format(scan_text(scan)))
+                    stop_navigation()
                 else:
                     avoid_direction = direction
                     avoid_attempts += 1
@@ -415,6 +651,8 @@ while robot.step(time_step) != -1:
                     avoid_started = robot.getTime()
                     avoid_start_position = planar_position(robot_node)
                     print("OBSTACULO: GIRAR {} | {} | destino {}".format(avoid_direction, scan_text(scan), current_destination_name))
+                    emit("evasion_iniciada", {"tarea_id": task["tarea_id"] if task else None, "direccion": avoid_direction,
+                                              "intento": avoid_attempts, "max_intentos": MAX_AVOID_ATTEMPTS, "lidar": scan_text(scan)})
         elif mode == MODE_AVOID_TURN:
             target_speed = 0.0
             target_omega = AVOID_TURN_SPEED if avoid_direction == "LEFT" else -AVOID_TURN_SPEED
@@ -437,24 +675,67 @@ while robot.step(time_step) != -1:
                 if traveled >= AVOID_MIN_TRAVEL and abs(goal_angle) < AVOID_HEADING_TOLERANCE and forward_corridor_clear(scan) and front_distance > FRONT_CLEAR_DISTANCE:
                     mode = MODE_GOAL
                     print("EVASION TERMINADA: RETOMANDO {}".format(current_destination_name))
+                    emit("evasion_terminada", {"tarea_id": task["tarea_id"] if task else None, "distancia_destino": round(distance, 2)})
         if navigation_active and mode in (MODE_AVOID_TURN, MODE_AVOID_FOLLOW) and robot.getTime() - avoid_started > AVOID_MAX_SECONDS:
             print("EVASION SIN SALIDA EN {:.0f} s: STOP".format(AVOID_MAX_SECONDS))
-            navigation_active = False
-            current_destination = None
-            current_destination_name = None
-            mode = MODE_GOAL
+            finish_task("fallo", "evasion_sin_salida", "La evasion hacia {} no encontro salida en {:.0f} s | {}".format(avoid_direction, AVOID_MAX_SECONDS, scan_text(scan)))
+            stop_navigation()
             target_speed = 0.0
             target_omega = 0.0
+        # Vigilancia: navegando sin desplazarse = atascado (aunque ninguna regla haya saltado).
+        if navigation_active:
+            here = planar_position(robot_node)
+            if float(np.linalg.norm(here - progress_position)) >= SIN_PROGRESO_DISTANCIA:
+                progress_position = here
+                progress_time = now
+            elif now - progress_time > SIN_PROGRESO_SEGUNDOS:
+                print("SIN PROGRESO EN {:.0f} s: STOP".format(SIN_PROGRESO_SEGUNDOS))
+                finish_task("fallo", "sin_progreso", "Navegando sin avanzar {:.2f} m en {:.0f} s (modo {}); distancia al destino {:.2f} m | {}".format(
+                    SIN_PROGRESO_DISTANCIA, SIN_PROGRESO_SEGUNDOS, mode, distance, scan_text(scan)))
+                stop_navigation()
+                target_speed = 0.0
+                target_omega = 0.0
         if navigation_active and step_counter % LOG_EVERY_STEPS == 0:
             print("{} | {} | Dist {:.2f} m | Ang {:.2f} rad | {}".format(current_destination_name, mode, distance, goal_angle, scan_text(scan)))
 
+    elif maneuver is not None:
+        # Maniobra corta pedida por el agente (girar N grados / avanzar N metros).
+        elapsed = now - maneuver["inicio"]
+        if maneuver["tipo"] == "girar":
+            forward = planar_forward(robot_node)
+            maneuver["hecho"] += heading_delta(maneuver["frente_previo"], forward)
+            maneuver["frente_previo"] = forward
+            remaining = maneuver["objetivo"] - maneuver["hecho"]
+            done = abs(remaining) < math.radians(2.0)
+            target_omega = 0.0 if done else math.copysign(clamp(abs(remaining) * 1.5, 0.05, MANIOBRA_GIRO), remaining)
+        else:
+            maneuver["hecho"] = float(np.linalg.norm(planar_position(robot_node) - maneuver["posicion_inicial"]))
+            remaining = abs(maneuver["objetivo"]) - maneuver["hecho"]
+            done = remaining < 0.03
+            target_speed = 0.0 if done else math.copysign(clamp(remaining * 0.8, 0.05, MANIOBRA_VELOCIDAD), maneuver["objetivo"])
+        if done:
+            amount = math.degrees(maneuver["hecho"]) if maneuver["tipo"] == "girar" else maneuver["hecho"]
+            finish_task("exito", "maniobra_completa", "{} completado: {:.2f} {}".format(maneuver["tipo"], amount, "grados" if maneuver["tipo"] == "girar" else "m"))
+            maneuver = None
+            target_speed = 0.0
+            target_omega = 0.0
+        elif elapsed > MANIOBRA_TIEMPO_MAX:
+            finish_task("fallo", "tiempo_agotado", "La maniobra {} no termino en {:.0f} s".format(maneuver["tipo"], MANIOBRA_TIEMPO_MAX))
+            maneuver = None
+            target_speed = 0.0
+            target_omega = 0.0
+
     # SEGURIDAD FINAL: no permitir avance si la huella frontal esta ocupada.
+    requested_speed, requested_omega = target_speed, target_omega
+    safety_block = None
     if not lidar_ok:
         target_speed = 0.0
         target_omega = 0.0
+        safety_block = "lidar_sin_datos"
     if target_speed > 0.0 and not forward_corridor_clear(scan):
         target_speed = 0.0
         target_omega = 0.0
+        safety_block = "corredor_frontal_ocupado"
         if step_counter % LOG_EVERY_STEPS == 0:
             print("SEGURIDAD CORREDOR: {} | STOP".format(scan_text(scan)))
     # Precaucion con rotaciones junto a maquinaria cercana.
@@ -462,13 +743,30 @@ while robot.step(time_step) != -1:
         turn_direction = "LEFT" if target_omega > 0 else "RIGHT"
         if not turn_clearance(scan, turn_direction):
             target_omega = 0.0
+            safety_block = "sin_espacio_para_girar_" + ("izquierda" if turn_direction == "LEFT" else "derecha")
             if step_counter % LOG_EVERY_STEPS == 0:
                 print("GIRO BLOQUEADO: {} | {}".format(turn_direction, scan_text(scan)))
     if target_speed < 0.0 and back_distance < SAFE_DISTANCE_BACK:
         target_speed = 0.0
+        safety_block = "obstaculo_atras"
     if mode == MODE_WAIT_PERSON or person_detected:
         target_speed = 0.0
         target_omega = 0.0
+        safety_block = "persona"
+
+    # Una maniobra que la seguridad frena durante un rato falla con el motivo exacto.
+    if maneuver is not None and mode != MODE_WAIT_PERSON:
+        blocked = (requested_speed != 0.0 and target_speed == 0.0) or (requested_omega != 0.0 and target_omega == 0.0)
+        if not blocked:
+            maneuver["bloqueado_desde"] = None
+        elif maneuver["bloqueado_desde"] is None:
+            maneuver["bloqueado_desde"] = now
+        elif now - maneuver["bloqueado_desde"] > MANIOBRA_BLOQUEO_SEGUNDOS:
+            finish_task("fallo", "maniobra_bloqueada", "La seguridad impide {} ({}) | {} | atras {:.2f}".format(
+                maneuver["tipo"], safety_block, scan_text(scan), back_distance))
+            maneuver = None
+            target_speed = 0.0
+            target_omega = 0.0
 
     # TURN_SIGN corrige la direccion fisica de los motores si fuera necesario.
     target_omega *= TURN_SIGN
@@ -479,4 +777,6 @@ while robot.step(time_step) != -1:
 
 motor_left_wheel.setVelocity(0.0)
 motor_right_wheel.setVelocity(0.0)
+if bridge is not None:
+    bridge.cerrar()
 cv2.destroyAllWindows()
