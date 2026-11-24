@@ -27,7 +27,8 @@ agente/
 ├── robot_cliente.py                     Python client for the bridge
 ├── herramientas.py                      Robot tools for agents (wait for task end, failure hints)
 ├── servidor_mcp.py                      MCP server (stdio) exposing those tools
-├── requirements.txt                     mcp>=2.3 (SDK 2.x: MCPServer, not FastMCP)
+├── agente.py                            Autonomous agent: Claude + MCP tools, loop to success/failure
+├── requirements.txt                     mcp>=2.3 (SDK 2.x: MCPServer, not FastMCP), anthropic[mcp]>=2.14
 └── cli.py                               Manual bridge testing from a terminal, no AI
 .mcp.json                                Registers the mir100 MCP server for Claude Code
 tests/                                   Bridge, tools and MCP tests, no Webots needed
@@ -114,6 +115,23 @@ connection and runs in a worker thread, so `parar` works while `ir_a` is waiting
 Errors (no Webots, bad args) come back as `{"error": ...}` rather than exceptions.
 Logic lives in `herramientas.py` so the part-3 agent can reuse it.
 
+### Autonomous agent (`agente/agente.py`)
+
+`.venv/bin/python agente/agente.py "Vaya al punto de entrega 3"`. Launches
+`servidor_mcp.py` over stdio, converts its tools with `anthropic.lib.tools.mcp.async_mcp_tool`
+and runs the Anthropic SDK tool runner (`claude-opus-5-5`, adaptive thinking, effort
+`high`, server-side `fallbacks: "default"`, auto prompt caching). The model plans,
+acts, recovers and must finish by calling the local `reportar_resultado` tool.
+
+Hard limits enforced in code, not by the prompt: `--max-pasos` (model turns),
+`--max-movimientos` (movement tool calls), `--minutos` (wall clock). If the model never
+reports (limit, API error, refusal), the program writes a fallback report from the last
+robot result and its `sugerencia`. Any non-success ends with `parar`. Checks the robot
+connection before the first API call. Each run is logged to `agente/registros/` (gitignored).
+Uses its own venv (`.venv`, gitignored) because the system Python has `anthropic` 0.x.
+`tests/test_agente.py` drives it with a scripted fake tool runner (no API calls); it is
+skipped under the system Python.
+
 ### Design principles (keep these intact)
 
 - **Any future AI is an advisor, never a motor controller.** It may pick tasks or
@@ -146,8 +164,12 @@ should be tuned to the robot's real footprint. LiDAR sector fractions in
 5. MCP: `python3 -m pip install -r agente/requirements.txt`. Claude Code picks up
    `.mcp.json` from the repo root (approve the `mir100` server once); then ask it in
    plain language, e.g. "lleva el robot a la entrega 3".
+6. Autonomous agent: `python3 -m venv .venv && .venv/bin/python -m pip install -r
+   agente/requirements.txt`, put `ANTHROPIC_API_KEY=...` in `.env`, then
+   `.venv/bin/python agente/agente.py "Vaya al punto de entrega 3"`. Each run bills API usage.
 
-Tests (no Webots): `python3 -m unittest discover -s tests -v`. Controller behavior is
+Tests (no Webots, no API): `.venv/bin/python -m unittest discover -s tests -v` (all 23)
+or `python3 -m unittest discover -s tests -v` (agent tests skipped). Controller behavior is
 verified by running the simulation and reading the Webots console. Headless run for
 testing: `MIR_PUENTE_PUERTO=5560 /Applications/Webots.app/Contents/MacOS/webots --batch
 --mode=fast --minimize --no-rendering --stdout --stderr --port=1240 mir100/worlds/mir100.wbt`

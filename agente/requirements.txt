@@ -1,2 +1,4 @@
 # Dependencias del agente (fuera de Webots). El controlador usa ultralytics, opencv-python y numpy.
+# Instalar en un entorno propio:  python3 -m venv .venv && .venv/bin/python -m pip install -r agente/requirements.txt
 mcp>=2.3,<3
+anthropic[mcp]>=2.14,<3
