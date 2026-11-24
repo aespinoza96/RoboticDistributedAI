@@ -24,9 +24,13 @@ mir100/                                  Webots project root (open this in Webot
 │   └── Makefile                         Stock Webots Makefile (not needed for Python)
 └── webots.yaml
 agente/
-├── robot_cliente.py                     Python client for the bridge (used by MCP/agent later)
+├── robot_cliente.py                     Python client for the bridge
+├── herramientas.py                      Robot tools for agents (wait for task end, failure hints)
+├── servidor_mcp.py                      MCP server (stdio) exposing those tools
+├── requirements.txt                     mcp>=2.3 (SDK 2.x: MCPServer, not FastMCP)
 └── cli.py                               Manual bridge testing from a terminal, no AI
-tests/test_puente.py                     Bridge + client tests, no Webots needed
+.mcp.json                                Registers the mir100 MCP server for Claude Code
+tests/                                   Bridge, tools and MCP tests, no Webots needed
 docs/mejoras-y-futuro.md                 Roadmap (Spanish)
 ```
 
@@ -100,6 +104,16 @@ and no other thread touches Webots.
 - Maneuvers go through the same final safety layer as everything else. Waiting for a
   person pauses the maneuver timer and the progress watchdog.
 
+### MCP server (`agente/servidor_mcp.py`)
+
+Tools: `estado_robot`, `listar_destinos`, `escanear_entorno`, `ir_a`, `girar`,
+`avanzar`, `parar`, `esperar_tarea`. Movement tools wait (default) until the task ends
+and return `estado`, `motivo`, `detalle`, `contexto`, the event timeline and a
+`sugerencia` from `herramientas.SUGERENCIAS`. Each tool call opens its own bridge
+connection and runs in a worker thread, so `parar` works while `ir_a` is waiting.
+Errors (no Webots, bad args) come back as `{"error": ...}` rather than exceptions.
+Logic lives in `herramientas.py` so the part-3 agent can reuse it.
+
 ### Design principles (keep these intact)
 
 - **Any future AI is an advisor, never a motor controller.** It may pick tasks or
@@ -129,6 +143,9 @@ should be tuned to the robot's real footprint. LiDAR sector fractions in
    variables already set in the environment. Nothing needs a key today.
 4. Click inside the 3D view, then press `1`, `2` or `3`, or drive it through the bridge:
    `python3 agente/cli.py ir_a destino=ENTREGA_3 --esperar` (see `agente/cli.py`).
+5. MCP: `python3 -m pip install -r agente/requirements.txt`. Claude Code picks up
+   `.mcp.json` from the repo root (approve the `mir100` server once); then ask it in
+   plain language, e.g. "lleva el robot a la entrega 3".
 
 Tests (no Webots): `python3 -m unittest discover -s tests -v`. Controller behavior is
 verified by running the simulation and reading the Webots console. Headless run for

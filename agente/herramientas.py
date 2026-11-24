@@ -1,0 +1,143 @@
+"""Herramientas del MiR100 para un agente: funciones simples sobre el puente.
+
+Las usan el servidor MCP (servidor_mcp.py) y, en la parte 3, el agente autonomo.
+Cada llamada abre su propia conexion con el robot, asi una espera larga
+(ir_a) no impide llamar a parar() desde otra herramienta.
+
+Todas devuelven un dict serializable a JSON. Los errores de conexion o de
+argumentos se devuelven como {"error": "..."} en lugar de lanzar excepciones,
+para que el agente pueda leerlos y decidir.
+"""
+import time
+
+from robot_cliente import PUERTO_POR_DEFECTO, RobotCliente, RobotError
+
+ESPERA_MAX_SEGUNDOS = 600.0
+
+# Que puede intentar el agente ante cada motivo de fallo. No es una orden: el
+# agente decide, y la capa de seguridad del robot sigue teniendo la ultima palabra.
+SUGERENCIAS = {
+    "llego": "Objetivo cumplido.",
+    "maniobra_completa": "Maniobra cumplida.",
+    "sin_espacio_lateral": "Obstaculo al frente sin espacio para girar. Prueba escanear_entorno, retroceder 0.3-0.5 m con avanzar(metros negativos) y volver a intentar ir_a.",
+    "limite_evasiones": "El robot esquivo varias veces sin llegar. Prueba retroceder, girar hacia el lado con mas espacio (escanear_entorno) y reintentar ir_a; si se repite, la ruta probablemente esta bloqueada.",
+    "evasion_sin_salida": "La evasion no encontro salida. Prueba retroceder 0.5 m, girar 45-90 grados hacia el lado con mas espacio y reintentar ir_a.",
+    "sin_progreso": "El robot no se desplazo. Revisa escanear_entorno: puede estar encajado; prueba retroceder o girar antes de reintentar.",
+    "lidar_sin_datos": "El LiDAR no da lecturas suficientes. No es seguro moverse; informa el problema en lugar de insistir.",
+    "maniobra_bloqueada": "La seguridad impidio la maniobra (ver detalle). Elige otra maniobra hacia el lado libre o informa que el robot esta encajado.",
+    "tiempo_agotado": "La maniobra no termino a tiempo. Revisa estado_robot y escanear_entorno antes de seguir.",
+    "parar": "Tarea cancelada por parar().",
+    "reemplazada": "Otra orden reemplazo esta tarea.",
+    "teclado": "Un operador cancelo la tarea desde el teclado de Webots; no la reanudes sin consultar.",
+}
+
+
+PUERTO = PUERTO_POR_DEFECTO  # los tests lo cambian para apuntar a un robot falso
+
+
+def _cliente(puerto):
+    return RobotCliente(puerto=puerto or PUERTO, timeout=10.0)
+
+
+def _llamar(puerto, cmd, **args):
+    try:
+        with _cliente(puerto) as robot:
+            return robot.comando(cmd, **args)
+    except RobotError as error:
+        return {"error": str(error)}
+
+
+def _resumen_evento(evento):
+    datos = evento.get("datos", {})
+    claves = ("estado", "motivo", "detalle", "direccion", "intento", "max_intentos", "segundos", "confianza", "lidar")
+    return {"t": evento.get("t"), "evento": evento.get("evento"), **{k: datos[k] for k in claves if k in datos}}
+
+
+def _esperar(robot, tarea_id, timeout, al_evento=None):
+    """Espera tarea_terminada de tarea_id, guardando los eventos intermedios."""
+    timeout = min(float(timeout), ESPERA_MAX_SEGUNDOS)
+    inicio = time.monotonic()
+    linea_de_tiempo = []
+    while True:
+        restante = timeout - (time.monotonic() - inicio)
+        if restante <= 0:
+            return {"tarea_id": tarea_id, "estado": "en_curso",
+                    "detalle": "La tarea sigue en curso tras {:.0f} s de espera. Usa esperar_tarea o parar.".format(timeout),
+                    "eventos": linea_de_tiempo}
+        evento = robot.esperar_evento(timeout=min(restante, 5.0))
+        if evento is None:
+            continue
+        datos = evento.get("datos", {})
+        if datos.get("tarea_id") not in (None, tarea_id):
+            continue
+        if evento["evento"] == "tarea_iniciada":
+            continue
+        if evento["evento"] == "tarea_terminada":
+            motivo = datos.get("motivo")
+            return {"tarea_id": tarea_id, "tipo": datos.get("tipo"), "args": datos.get("args"),
+                    "estado": datos.get("estado"), "motivo": motivo, "detalle": datos.get("detalle"),
+                    "duracion_simulada_s": round((datos.get("fin") or 0) - (datos.get("inicio") or 0), 1),
+                    "contexto": datos.get("contexto"), "eventos": linea_de_tiempo,
+                    "sugerencia": SUGERENCIAS.get(motivo, "")}
+        resumen = _resumen_evento(evento)
+        linea_de_tiempo.append(resumen)
+        if al_evento is not None:
+            al_evento(resumen)
+
+
+def _orden(puerto, cmd, esperar, timeout, al_evento, **args):
+    try:
+        with _cliente(puerto) as robot:
+            # La conexion se abre antes de la orden para no perder ningun evento.
+            resultado = robot.comando(cmd, **args)
+            if not esperar:
+                return {**resultado, "estado": "en_curso", "detalle": "Orden aceptada. Usa esperar_tarea para conocer el resultado."}
+            return _esperar(robot, resultado["tarea_id"], timeout, al_evento)
+    except RobotError as error:
+        return {"error": str(error)}
+
+
+def estado_robot(puerto=None):
+    return _llamar(puerto, "estado")
+
+
+def listar_destinos(puerto=None):
+    return _llamar(puerto, "destinos")
+
+
+def escanear_entorno(puerto=None):
+    return _llamar(puerto, "escanear")
+
+
+def ir_a(destino, esperar=True, timeout_s=300.0, puerto=None, al_evento=None):
+    return _orden(puerto, "ir_a", esperar, timeout_s, al_evento, destino=destino)
+
+
+def girar(grados, esperar=True, timeout_s=60.0, puerto=None, al_evento=None):
+    return _orden(puerto, "girar", esperar, timeout_s, al_evento, grados=grados)
+
+
+def avanzar(metros, esperar=True, timeout_s=60.0, puerto=None, al_evento=None):
+    return _orden(puerto, "avanzar", esperar, timeout_s, al_evento, metros=metros)
+
+
+def parar(puerto=None):
+    return _llamar(puerto, "parar")
+
+
+def esperar_tarea(tarea_id, timeout_s=120.0, puerto=None, al_evento=None):
+    try:
+        with _cliente(puerto) as robot:
+            estado = robot.comando("estado")
+            ultima = estado.get("ultima_tarea") or {}
+            actual = estado.get("tarea") or {}
+            if actual.get("tarea_id") != tarea_id:
+                if ultima.get("tarea_id") == tarea_id:
+                    motivo = ultima.get("motivo")
+                    return {"tarea_id": tarea_id, "tipo": ultima.get("tipo"), "args": ultima.get("args"),
+                            "estado": ultima.get("estado"), "motivo": motivo, "detalle": ultima.get("detalle"),
+                            "contexto": ultima.get("contexto"), "eventos": [], "sugerencia": SUGERENCIAS.get(motivo, "")}
+                return {"error": "La tarea {} no esta en curso ni es la ultima terminada.".format(tarea_id)}
+            return _esperar(robot, tarea_id, timeout_s, al_evento)
+    except RobotError as error:
+        return {"error": str(error)}
