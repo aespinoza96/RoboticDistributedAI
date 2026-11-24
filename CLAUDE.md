@@ -2,8 +2,9 @@
 
 A Webots (R2025a) simulation of a **MiR100** autonomous mobile robot in an industrial
 factory. The robot drives to delivery points on its own, using LiDAR for obstacle safety,
-YOLO for person detection, and an external LLM ("JEV", via the TypeSafe SDK) as an
-*advisor* that suggests which way to turn when the path is blocked.
+YOLO for person detection, and a local LiDAR rule that picks which way to turn when the
+path is blocked. (An earlier external LLM advisor, "JEV", was removed: in the A/B
+experiment it did no better than the rule.)
 
 Code comments, console logs and identifiers are in **Spanish**. Keep that convention
 when editing (e.g. `DESTINO ALCANZADO`, `PERSONA DETECTADA`).
@@ -52,12 +53,10 @@ Runs one `robot.step()` loop. Each step:
    manual control (only when not navigating).
 4. **State machine** (`mode`):
    - `GOAL`: rotate in place toward the goal, then drive forward while
-     `forward_corridor_clear()`. If blocked, ask JEV.
-   - `JEV_WAIT`: motors stopped; a background thread asks JEV (TypeSafe
-     `system_one`, `Choice` LEFT/RIGHT/STOP). The main loop never blocks; it polls the
-     queue and times out after `JEV_REQUEST_TIMEOUT`. Late replies are discarded via
-     `jev_request_id`.
-   - `AVOID_TURN`: turn in place in the approved direction until the front is clear.
+     `forward_corridor_clear()`. If blocked, `choose_avoid_direction(scan)` picks the
+     side that has turn clearance (side and diagonal) and the most free space; if
+     neither side qualifies, STOP and cancel.
+   - `AVOID_TURN`: turn in place in the chosen direction until the front is clear.
    - `AVOID_FOLLOW`: follow the obstacle edge (P-control on side distance) with a small
      goal bias, then return to `GOAL` after `AVOID_MIN_TRAVEL` and when the robot is
      facing the goal again.
@@ -69,13 +68,14 @@ Runs one `robot.step()` loop. Each step:
 
 ### Design principles (keep these intact)
 
-- **JEV is an advisor, never a motor controller.** Its answer is accepted only if
-  confidence ≥ `JEV_MIN_CONFIDENCE`, the choice is LEFT/RIGHT, and the LiDAR confirms
-  clearance on that side. Otherwise: STOP and cancel navigation.
-- **Fail safe**: any error, timeout, missing SDK/API key, too many avoid attempts
+- **Any future AI is an advisor, never a motor controller.** It may pick tasks or
+  directions, but the LiDAR checks and the final safety layer always have the last word.
+  AI calls must run off the main loop (background thread) and never call Webots APIs.
+- **Fail safe**: no side with clearance, too many avoid attempts
   (`MAX_AVOID_ATTEMPTS`) or a stuck avoidance (`AVOID_MAX_SECONDS`) ends in STOP.
 - Local reactive navigation only. There is no global planner or map.
-- Never call Webots APIs from the JEV worker thread.
+- Known issue: the LiDAR sectors are cut by scan fractions and may be mislabeled
+  (see `docs/mejoras-y-futuro.md`); fixing them by real ray angle is a pending step.
 
 ### Calibration knobs (top of the file)
 
@@ -89,11 +89,10 @@ should be tuned to the robot's real footprint. LiDAR sector fractions in
 1. Install Webots R2025a and open `mir100/worlds/mir100.wbt`. EXTERNPROTOs are fetched
    from GitHub, so the first load needs internet.
 2. Install the Python deps into the Python interpreter Webots uses (set in Webots
-   preferences): `ultralytics`, `opencv-python`, `numpy`, `typesafe-sdk` (optional).
-3. For JEV obstacle avoidance, put `TYPESAFE_API_KEY=...` in the repo-root `.env`
-   (gitignored). `load_env_file()` in the controller loads it at startup without
-   overriding variables already set in the environment. Without the key the robot still drives and stops safely at obstacles, but
-   it won't go around them.
+   preferences): `ultralytics`, `opencv-python`, `numpy`.
+3. Optional: API keys for future AI features go in the repo-root `.env` (gitignored).
+   `load_env_file()` in the controller loads it at startup without overriding
+   variables already set in the environment. Nothing needs a key today.
 4. Click inside the 3D view, then press `1`, `2` or `3`.
 
 There are no automated tests. Verify behavior by running the simulation and reading the
@@ -101,7 +100,7 @@ Webots console.
 
 ## Notes / gotchas
 
-- Don't commit API keys. JEV reads the key from `TYPESAFE_API_KEY` (env or `.env`).
+- Don't commit API keys. Keep them in the environment or `.env`.
 - `keyboard_matlab.m` defines `function keyboard_control` (its name doesn't match the
   file) and is stock sample code. Ignore it unless it's being revived.
 - `.mir100.wbproj` / `.mir100.jpg` are Webots-generated UI state and thumbnail files.
