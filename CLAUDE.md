@@ -19,6 +19,7 @@ mir100/                                  Webots project root (open this in Webot
 │   ├── keyboard_control/
 │   │   ├── keyboard_control.py          MAIN controller (the one that matters)
 │   │   ├── puente.py                    Command bridge: local TCP server, JSON lines
+│   │   ├── lidar.py                     LiDAR sectors by real ray angle (pure numpy)
 │   │   └── yolo11n.pt                   YOLO11 nano weights (COCO), loaded by name
 │   ├── keyboard_matlab/keyboard_matlab.m  Leftover stock Webots MATLAB keyboard teleop (unused)
 │   └── Makefile                         Stock Webots Makefile (not needed for Python)
@@ -54,9 +55,14 @@ docs/mejoras-y-futuro.md                 Roadmap (Spanish)
 
 Runs one `robot.step()` loop. Each step:
 
-1. **LiDAR**: front scan split into sectors `left / front_left / front / front_right /
-   right`, back scan gives `back`. A sector with too few valid rays reads `0.0` and
-   `ok=False`. *Unknown means blocked*: never treat missing data as free space.
+1. **LiDAR** (`lidar.py`): both SickS300 scans become points in the robot frame by
+   real ray angle (they sit on opposite corners, rotated and upside down: front ray
+   *i* → −90° + *i*·step, back ray *i* → +90° + *i*·step; 0° = forward, + = left).
+   Sectors `left / front_left / front / front_right / right / back` are angle ranges
+   seen from the robot center, and each value is **clearance from the robot's
+   footprint edge** (890×580 mm), not from the sensor. Never cut the range image by
+   percentages. A sector with too few valid rays reads `0.0` and `ok=False`.
+   *Unknown means blocked*: never treat missing data as free space.
 2. **YOLO** (every `YOLO_EVERY_N_STEPS`): any COCO class 0 (person) above
    `YOLO_CONFIDENCE` puts the robot in `WAIT_PERSON` (full stop). It resumes after
    `PERSON_CLEAR_DETECTIONS` clean inferences. Shows an OpenCV window with detections.
@@ -140,15 +146,18 @@ skipped under the system Python.
 - **Fail safe**: no side with clearance, too many avoid attempts
   (`MAX_AVOID_ATTEMPTS`) or a stuck avoidance (`AVOID_MAX_SECONDS`) ends in STOP.
 - Local reactive navigation only. There is no global planner or map.
-- Known issue: the LiDAR sectors are cut by scan fractions and may be mislabeled
-  (see `docs/mejoras-y-futuro.md`); fixing them by real ray angle is a pending step.
+- Known issue: reactive avoidance still fails to reach ENTREGA_1 and ENTREGA_3
+  (`evasion_sin_salida` / `sin_progreso` while edge-following). Next options: tune the
+  edge-following and side thresholds, or bring the map + A\* from the previous project.
 
 ### Calibration knobs (top of the file)
 
 `ROBOT_FORWARD_AXIS`, `TURN_SIGN`, `LIDAR_SWAP_SIDES` fix axis or orientation mismatches.
 The `SAFE_DISTANCE_*` / `*_CLEARANCE*` values are conservative starting margins that
-should be tuned to the robot's real footprint. LiDAR sector fractions in
-`read_lidar_distances()` should be checked visually in Webots.
+are now measured as clearance from the robot body (before, the "right" value included
+the robot's width), so they may need re-tuning. LiDAR mounting angles, positions,
+footprint and sector ranges live at the top of `lidar.py`; they were verified in
+Webots against the arena walls (right 1.22 m vs 1.26 expected, back 1.08 vs 1.1).
 
 ## Running
 

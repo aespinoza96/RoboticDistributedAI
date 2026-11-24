@@ -35,6 +35,7 @@ def load_env_file():
 load_env_file()
 
 from puente import PuenteComandos  # noqa: E402  (mismo directorio del controlador)
+from lidar import distancias_por_sector  # noqa: E402
 
 # ===================================================
 # CONFIGURACION - AJUSTAR EN TU ESCENARIO
@@ -143,46 +144,21 @@ def goal_geometry(robot_node, destination_node):
     return distance, angle_error
 
 
-def normalize_ranges(raw, maximum):
-    values = np.array(raw, dtype=float)
-    values[np.isposinf(values)] = maximum
-    values[~np.isfinite(values)] = 0.0
-    values[(values <= 0.0) | (values > maximum)] = 0.0
-    return values
-
-
-def sector_distance(values, start_fraction, end_fraction, method="percentile"):
-    total = len(values)
-    part = values[int(total * start_fraction):max(int(total * end_fraction), int(total * start_fraction) + 1)]
-    valid = part[part > 0.0]
-    if len(valid) < max(1, int(len(part) * 0.25)):
-        return 0.0
-    if method == "minimum":
-        return float(np.min(valid))
-    return float(np.percentile(valid, 20))
-
-
 def read_lidar_distances(front_lidar, back_lidar):
-    # El orden de los sectores debe validarse visualmente en Webots.
-    # Nunca se asume que una zona sin rayos validos este despejada.
+    # Sectores por angulo real en el marco del robot (ver lidar.py); las distancias
+    # son holgura al borde de la huella del robot. Una zona sin rayos validos
+    # nunca se considera despejada: su sector vale 0.0 y ok=False.
+    empty = {"left": 0.0, "front_left": 0.0, "front": 0.0, "front_right": 0.0, "right": 0.0, "back": 0.0, "ok": False}
     try:
-        front_values = normalize_ranges(front_lidar.getLayerRangeImage(0), front_lidar.getMaxRange())
-        back_values = normalize_ranges(back_lidar.getLayerRangeImage(0), back_lidar.getMaxRange())
+        front_values = front_lidar.getLayerRangeImage(0)
+        back_values = back_lidar.getLayerRangeImage(0)
+        if not front_values or not back_values:
+            return empty
+        data = distancias_por_sector(front_values, back_values, front_lidar.getMaxRange(), back_lidar.getMaxRange(),
+                                     math.degrees(front_lidar.getFov()))
     except Exception as error:
         print("ERROR LIDAR: {}".format(error))
-        return {"left": 0.0, "front_left": 0.0, "front": 0.0, "front_right": 0.0, "right": 0.0, "back": 0.0, "ok": False}
-
-    if len(front_values) == 0 or len(back_values) == 0:
-        return {"left": 0.0, "front_left": 0.0, "front": 0.0, "front_right": 0.0, "right": 0.0, "back": 0.0, "ok": False}
-
-    data = {
-        "left": sector_distance(front_values, 0.06, 0.23),
-        "front_left": sector_distance(front_values, 0.23, 0.41),
-        "front": sector_distance(front_values, 0.41, 0.59, "minimum"),
-        "front_right": sector_distance(front_values, 0.59, 0.77),
-        "right": sector_distance(front_values, 0.77, 0.94),
-        "back": sector_distance(back_values, 0.35, 0.65, "minimum")
-    }
+        return empty
 
     if LIDAR_SWAP_SIDES:
         data["left"], data["right"] = data["right"], data["left"]
