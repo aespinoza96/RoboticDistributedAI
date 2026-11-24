@@ -1,0 +1,2 @@
+# Dependencias del agente (fuera de Webots). El controlador usa ultralytics, opencv-python y numpy.
+mcp>=2.3,<3
