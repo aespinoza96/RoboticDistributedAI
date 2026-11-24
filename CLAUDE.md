@@ -20,6 +20,7 @@ mir100/                                  Webots project root (open this in Webot
 │   │   ├── keyboard_control.py          MAIN controller (the one that matters)
 │   │   ├── puente.py                    Command bridge: local TCP server, JSON lines
 │   │   ├── lidar.py                     LiDAR sectors by real ray angle (pure numpy)
+│   │   ├── profundidad.py               Depth camera → 3D obstacles above the LiDAR plane
 │   │   └── yolo11n.pt                   YOLO11 nano weights (COCO), loaded by name
 │   ├── keyboard_matlab/keyboard_matlab.m  Leftover stock Webots MATLAB keyboard teleop (unused)
 │   └── Makefile                         Stock Webots Makefile (not needed for Python)
@@ -32,7 +33,7 @@ agente/
 ├── requirements.txt                     mcp>=2.3 (SDK 2.x: MCPServer, not FastMCP), anthropic[mcp]>=2.14
 └── cli.py                               Manual bridge testing from a terminal, no AI
 .mcp.json                                Registers the mir100 MCP server for Claude Code
-tests/                                   Bridge, tools and MCP tests, no Webots needed
+tests/                                   Bridge, tools, MCP, agent, LiDAR and depth tests, no Webots needed
 docs/mejoras-y-futuro.md                 Roadmap (Spanish)
 ```
 
@@ -63,6 +64,18 @@ Runs one `robot.step()` loop. Each step:
    footprint edge** (890×580 mm), not from the sensor. Never cut the range image by
    percentages. A sector with too few valid rays reads `0.0` and `ok=False`.
    *Unknown means blocked*: never treat missing data as free space.
+   **Depth camera** (`profundidad.py`): the LiDAR plane (~0.19 m) misses tabletops,
+   raised conveyors and anything above it. The `depth_camera` RangeFinder (x 0.464,
+   z 0.18, forward, 118°, 0.18–1.95 m; Webots returns **planar** depth, verified: the
+   floor reconstructs at z = 0.002 m) is projected to 3D points every
+   `PROFUNDIDAD_CADA_N_PASOS`; points between 0.05 m and `ALTURA_ROBOT` (1.0 m) are
+   obstacles. Each sector takes the **minimum** of LiDAR and depth clearance, so the
+   whole safety/avoidance logic sees them. Depth only adds obstacles, never makes a
+   sector unknown. Sectors where depth is clearly closer than the LiDAR are reported as
+   `obstaculos_altos` (in `estado`/`escanear`) and as an `obstaculo_alto` event.
+   `MIR_PROFUNDIDAD=0` turns it off for A/B runs; `volcar_profundidad(ruta=.npy)` dumps
+   the raw image for calibration. Verified at the world's table: tabletop seen at
+   0.67–0.69 m height where the LiDAR read 0.2–0.3 m farther.
 2. **YOLO** (every `YOLO_EVERY_N_STEPS`): any COCO class 0 (person) above
    `YOLO_CONFIDENCE` puts the robot in `WAIT_PERSON` (full stop). It resumes after
    `PERSON_CLEAR_DETECTIONS` clean inferences. Shows an OpenCV window with detections.
@@ -177,7 +190,7 @@ Webots against the arena walls (right 1.22 m vs 1.26 expected, back 1.08 vs 1.1)
    agente/requirements.txt`, put `ANTHROPIC_API_KEY=...` in `.env`, then
    `.venv/bin/python agente/agente.py "Vaya al punto de entrega 3"`. Each run bills API usage.
 
-Tests (no Webots, no API): `.venv/bin/python -m unittest discover -s tests -v` (all 23)
+Tests (no Webots, no API): `.venv/bin/python -m unittest discover -s tests -v` (all)
 or `python3 -m unittest discover -s tests -v` (agent tests skipped). Controller behavior is
 verified by running the simulation and reading the Webots console. Headless run for
 testing: `MIR_PUENTE_PUERTO=5560 /Applications/Webots.app/Contents/MacOS/webots --batch
