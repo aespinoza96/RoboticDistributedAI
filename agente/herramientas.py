@@ -23,6 +23,7 @@ SUGERENCIAS = {
     "limite_evasiones": "El robot esquivo varias veces sin llegar. Prueba retroceder, girar hacia el lado con mas espacio (escanear_entorno) y reintentar ir_a; si se repite, la ruta probablemente esta bloqueada.",
     "evasion_sin_salida": "La evasion no encontro salida. Prueba retroceder 0.5 m, girar 45-90 grados hacia el lado con mas espacio y reintentar ir_a.",
     "bloqueado_por_seguridad": "La seguridad freno la navegacion (ver detalle: que regla y en que modo). Mira obstaculos_altos en escanear_entorno y rodea el obstaculo con ir_a_punto hacia un lado libre, en vez de reintentar ir_a igual.",
+    "persona_cerca": "PRIORIDAD: el robot encontro una persona a 0.6 m o menos y se detuvo solo (ver detalle: distancia, angulo y posicion). Informa al operador. No avances hacia ella; si la orden debe seguir, rodeala (girar o retroceder y luego ir_a / ir_a_punto).",
     "persona_a_la_vista": "El robot se detuvo al ver a una persona, como se pidio (ver detalle: distancia, angulo y posicion). Sigue la orden segun lo que pidio el operador.",
     "sin_ruta": "El mapa no tiene camino libre hacia el destino con lo que conoce. Explora con ir_a_punto hacia zonas que el robot aun no vio (por ejemplo por el otro extremo del obstaculo) y vuelve a intentar; si todo esta cerrado, reportalo.",
     "meta_inalcanzable": "El destino cae dentro de un obstaculo segun el mapa; el robot quedo lo mas cerca posible. Informa que hay algo ocupando el punto de entrega.",

@@ -27,6 +27,8 @@ Principios:
   ir_a_punto hacia el lado libre; despues reintenta ir_a. Si tras 3 intentos el robot
   no se acerca al destino, deten el robot y explica con claridad por que no se puede seguir.
 - Nunca reanudes una tarea que un operador cancelo desde el teclado sin consultar.
+- PRIORIDAD: si el robot ve una persona a 0.6 m o menos se detiene solo y la tarea termina
+  con estado "detenida" y motivo "persona_cerca" (con su posicion). Informalo siempre.
 """
 
 servidor = MCPServer(name="mir100", title="Robot MiR100 (Webots)", instructions=INSTRUCCIONES)

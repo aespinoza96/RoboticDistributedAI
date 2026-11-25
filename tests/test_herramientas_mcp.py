@@ -36,6 +36,7 @@ class RobotSimulado:
         self.ordenes = []
         self.posicion = [3.36, 4.95]
         self.motivo_e3 = "evasion_sin_salida"
+        self.estado_e3 = "fallo"
         # (metros_por_ruta o None, mapa_conocido_m2) para el comando "ruta"; por defecto linea recta.
         self.ruta_fn = lambda pos, meta: (((pos[0] - meta[0]) ** 2 + (pos[1] - meta[1]) ** 2) ** 0.5, 50.0)
         self.activo = True
@@ -92,7 +93,7 @@ class RobotSimulado:
             self._programar(0, "tarea_iniciada", dict(self.tarea))
             if cmd == "ir_a" and args["destino"] == "ENTREGA_3":
                 self._programar(0.05, "evasion_iniciada", {"tarea_id": tid, "direccion": "RIGHT", "intento": 1})
-                self._programar(0.15, "tarea_terminada", dict(self.tarea, estado="fallo", motivo=self.motivo_e3,
+                self._programar(0.15, "tarea_terminada", dict(self.tarea, estado=self.estado_e3, motivo=self.motivo_e3,
                                                                detalle="sin salida", fin=self.t + 45,
                                                                contexto={"modo": "AVOID_TURN", "posicion": list(self.posicion)}))
             elif cmd == "ir_a_punto":
@@ -170,6 +171,12 @@ class TestHerramientas(unittest.TestCase):
         self.assertEqual(r["evento"]["direccion"], "RIGHT")
         final = herramientas.esperar_tarea(r["tarea_id"], timeout_s=5)
         self.assertEqual(final["motivo"], "evasion_sin_salida")
+
+    def test_persona_cerca_trae_sugerencia(self):
+        self.robot.estado_e3, self.robot.motivo_e3 = "detenida", "persona_cerca"
+        r = herramientas.ir_a("ENTREGA_3")
+        self.assertEqual((r["estado"], r["motivo"]), ("detenida", "persona_cerca"))
+        self.assertIn("PRIORIDAD", r["sugerencia"])
 
     def test_ir_a_punto(self):
         r = herramientas.ir_a_punto(1.5, -2.0)

@@ -83,6 +83,11 @@ Runs one `robot.step()` loop. Each step:
    world, was 1 m): each person box is located by `personas.ubicar` (bearing from the box,
    distance from depth points inside the box, else from box height). The robot **passes
    carefully**: under `PERSONA_LENTO_M` (2 m) speed is capped at `PERSONA_VELOCIDAD`;
+   **YOLO has priority:** a person at `PERSONA_PARADA_M` (0.6 m) clearance or less always
+   stops the robot (navigation, maneuver or manual) and ends the task with
+   `estado: "detenida"`, `motivo: "persona_cerca"` and the person's distance, angle and
+   world position (event `persona_cerca` if there is no task). It fires once per encounter
+   and re-arms when the person is beyond `PERSONA_REARME_M` (0.9 m) or out of view;
    people become keep-out zones (`PERSONA_ZONA_RADIO` 1.0 m, remembered
    `PERSONA_MEMORIA_S`) that the planner routes around; forward motion stops only if a
    person is **ahead** (±`PERSONA_ANGULO_FRENTE`) within `PERSONA_PARADA_M` (0.6 m) —

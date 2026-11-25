@@ -83,7 +83,8 @@ YOLO_CONFIDENCE = 0.55
 YOLO_EVERY_N_STEPS = 3
 PERSON_CLEAR_DETECTIONS = 5       # 5 inferencias seguidas sin persona bloqueando antes de reanudar.
 # Personas: pasar con cuidado. Frenar solo si esta DELANTE y cerca; si no, ir despacio y rodearla.
-PERSONA_PARADA_M = 0.60           # holgura frontal a la que se frena (persona en el camino)
+PERSONA_PARADA_M = 0.60           # PRIORIDAD: persona a esta holgura o menos = el robot se detiene y avisa
+PERSONA_REARME_M = 0.90           # la parada se rearma cuando la persona se aleja mas que esto (o deja de verse)
 PERSONA_ANGULO_FRENTE = 35.0      # grados a cada lado que cuentan como "delante"
 PERSONA_LENTO_M = 2.0             # mas cerca que esto: velocidad reducida
 PERSONA_VELOCIDAD = 0.12          # m/s cerca de personas
@@ -384,6 +385,7 @@ people = []              # personas ubicadas en el marco del robot (personas.ubi
 person_blocking = False  # una persona delante y cerca: frena el avance
 person_near = False      # una persona cerca: velocidad reducida
 wait_for_people = False  # la tarea pidio "esperar" ante personas
+person_close_latched = False  # ya se aviso de la persona cercana actual (evita repetir la parada)
 lidar_points_xy = None
 people_zones = []        # (x, y, t) en el mundo, para que el planificador las rodee
 person_clear_count = 0
@@ -763,6 +765,27 @@ while robot.step(time_step) != -1:
                 wx, wy = mapa_mod.robot_a_mundo(pose_now, p["x"], p["y"])
                 p["x_mundo"], p["y_mundo"] = wx, wy
                 people_zones.append((wx, wy, robot.getTime()))
+            # PRIORIDAD YOLO: persona a PERSONA_PARADA_M o menos = detenerse y avisar, sea cual sea
+            # la orden (tambien sin tarea). Se avisa una vez por encuentro; despues la seguridad sigue
+            # impidiendo avanzar hacia ella, pero el agente puede girar o retroceder.
+            close = [p for p in people if p["holgura"] <= PERSONA_PARADA_M]
+            if close and not person_close_latched:
+                person_close_latched = True
+                nearest = min(close, key=lambda p: p["holgura"])
+                detail = "Persona encontrada a {:.2f} m (angulo {:.0f}, en ({:.2f}, {:.2f}) [{}]): el robot se detuvo".format(
+                    nearest["holgura"], nearest["angulo"], nearest["x_mundo"], nearest["y_mundo"], nearest["fuente"])
+                print("PERSONA CERCA: " + detail)
+                if task is not None:
+                    finish_task("detenida", "persona_cerca", detail)
+                else:
+                    emit("persona_cerca", {"holgura": round(nearest["holgura"], 2), "angulo": round(nearest["angulo"]),
+                                           "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)], "detalle": detail})
+                stop_navigation()
+                maneuver = None
+                manual_speed = 0.0
+                manual_omega = 0.0
+            elif not any(p["holgura"] <= PERSONA_REARME_M for p in people):
+                person_close_latched = False
             # "detenerse": la orden termina en cuanto se ve una persona dentro de distancia_persona.
             if task is not None and task_options.get("al_ver_persona") == "detenerse":
                 seen = [p for p in people if p["holgura"] <= task_options.get("distancia_persona", DISTANCIA_PERSONA_DEFECTO)]
