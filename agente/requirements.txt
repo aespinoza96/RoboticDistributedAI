@@ -2,3 +2,4 @@
 # Instalar en un entorno propio:  python3 -m venv .venv && .venv/bin/python -m pip install -r agente/requirements.txt
 mcp>=2.3,<3
 anthropic[mcp]>=2.14,<3
+numpy  # solo para los tests de LiDAR y profundidad

@@ -36,6 +36,7 @@ load_env_file()
 
 from puente import PuenteComandos  # noqa: E402  (mismo directorio del controlador)
 from lidar import distancias_por_sector  # noqa: E402
+import profundidad  # noqa: E402
 
 # ===================================================
 # CONFIGURACION - AJUSTAR EN TU ESCENARIO
@@ -78,6 +79,11 @@ YOLO_CONFIDENCE = 0.55
 YOLO_EVERY_N_STEPS = 3
 PERSON_CLEAR_DETECTIONS = 5       # 5 inferencias seguidas sin persona antes de reanudar.
 LOG_EVERY_STEPS = 30
+
+# Camara de profundidad: obstaculos por encima del plano del LiDAR (mesas, cintas).
+PROFUNDIDAD_ACTIVA = os.getenv("MIR_PROFUNDIDAD", "1") != "0"   # MIR_PROFUNDIDAD=0 la apaga (comparaciones A/B)
+PROFUNDIDAD_CADA_N_PASOS = 2       # se procesa cada N pasos; la ultima lectura se reutiliza
+OBSTACULO_ALTO_AVISO_SEGUNDOS = 10.0
 
 SAFE_DISTANCE_SIDE = 0.60      # Margen inicial conservador; calibrar para el robot.
 SAFE_DISTANCE_DIAGONAL = 0.95  # No atravesar esquinas de maquinaria.
@@ -268,6 +274,29 @@ back_lidar = robot.getDevice("back_lidar")
 front_lidar.enable(time_step)
 back_lidar.enable(time_step)
 
+depth_camera = robot.getDevice("depth_camera") if PROFUNDIDAD_ACTIVA else None
+if depth_camera is not None:
+    depth_camera.enable(time_step * PROFUNDIDAD_CADA_N_PASOS)
+    print("CAMARA DE PROFUNDIDAD: {}x{}, {:.0f} grados, {:.2f}-{:.2f} m".format(
+        depth_camera.getWidth(), depth_camera.getHeight(), math.degrees(depth_camera.getFov()),
+        depth_camera.getMinRange(), depth_camera.getMaxRange()))
+elif PROFUNDIDAD_ACTIVA:
+    print("ADVERTENCIA: no hay 'depth_camera'; solo LiDAR (no ve obstaculos por encima de su plano).")
+depth_sectors = {}
+depth_hits = []
+depth_warned_at = -1e9
+depth_error_printed = False
+
+
+def read_depth_image(device):
+    # getRangeImage(data_type="buffer") devuelve un puntero ctypes a floats: se lee
+    # sin convertir 921.600 valores a una lista de Python.
+    pointer = device.getRangeImage(data_type="buffer")
+    if not pointer:
+        return None
+    height, width = device.getHeight(), device.getWidth()
+    return np.ctypeslib.as_array(pointer, shape=(height * width,)).reshape((height, width)).copy()
+
 camera = robot.getDevice("camera")
 camera.enable(time_step)
 camera_width = camera.getWidth()
@@ -344,6 +373,7 @@ def robot_context():
         "lidar": {k: round(scan[k], 2) for k in ("left", "front_left", "front", "front_right", "right", "back")},
         "lidar_ok": scan["ok"],
         "persona_detectada": person_detected,
+        "obstaculos_altos": depth_hits,
     }
     if current_destination is not None:
         context["distancia_destino"] = round(goal_geometry(robot_node, current_destination)[0], 2)
@@ -436,7 +466,25 @@ def handle_command(client, message):
                 "lidar_ok": scan["ok"], "frente_libre": forward_corridor_clear(scan),
                 "puede_girar_izquierda": turn_clearance(scan, "LEFT"), "puede_girar_derecha": turn_clearance(scan, "RIGHT"),
                 "lado_sugerido_para_evadir": choose_avoid_direction(scan), "persona_detectada": person_detected,
-                "nota": "Distancias en metros; 0.0 = sin lecturas validas (se trata como bloqueado)."})
+                "obstaculos_altos": depth_hits,
+                "nota": "Holgura en metros desde el borde del robot; 0.0 = sin lecturas validas (se trata como bloqueado). "
+                        "Combina LiDAR (plano a 0.19 m) y camara de profundidad (al frente, hasta 1.95 m); "
+                        "obstaculos_altos = sectores donde la profundidad vio algo mas cerca que el LiDAR (p. ej. una mesa)."})
+        elif cmd == "volcar_profundidad":
+            # Diagnostico: guarda la imagen de profundidad cruda (.npy) para calibrar.
+            if depth_camera is None:
+                fail("No hay camara de profundidad")
+                return
+            path = str(args.get("ruta", ""))
+            if not path.endswith(".npy"):
+                fail("'ruta' debe terminar en .npy")
+                return
+            image = read_depth_image(depth_camera)
+            if image is None:
+                fail("La camara de profundidad aun no tiene imagen")
+                return
+            np.save(path, image)
+            ok({"ruta": path, "contexto": robot_context()})
         elif cmd == "ir_a":
             name = normalize_destination(args.get("destino", ""), destination_by_name)
             if name is None:
@@ -461,7 +509,7 @@ def handle_command(client, message):
             maneuver = None
             ok({"detenido": True, "habia_tarea": had_task})
         else:
-            fail("Comando desconocido '{}'. Comandos: estado, destinos, escanear, ir_a, girar, avanzar, parar".format(cmd))
+            fail("Comando desconocido '{}'. Comandos: estado, destinos, escanear, ir_a, girar, avanzar, parar, volcar_profundidad".format(cmd))
     except (TypeError, ValueError) as error:
         fail("Argumentos invalidos para '{}': {}".format(cmd, error))
 
@@ -477,6 +525,23 @@ print("PRECAUCION: prueba inicial en simulacion despejada, velocidad baja\n")
 while robot.step(time_step) != -1:
     step_counter += 1
     scan = read_lidar_distances(front_lidar, back_lidar)
+    if depth_camera is not None:
+        if step_counter % PROFUNDIDAD_CADA_N_PASOS == 0:
+            try:
+                depth_image = read_depth_image(depth_camera)
+                if depth_image is not None:
+                    depth_sectors = profundidad.holgura_por_sector(*profundidad.puntos_obstaculo(
+                        depth_image, depth_camera.getFov(), depth_camera.getMinRange(), depth_camera.getMaxRange()))
+            except Exception as error:
+                depth_sectors = {}
+                if not depth_error_printed:
+                    depth_error_printed = True
+                    print("ERROR PROFUNDIDAD (se sigue solo con LiDAR): {}".format(error))
+        scan, depth_hits = profundidad.combinar(scan, depth_sectors)
+        if depth_hits and task is not None and robot.getTime() - depth_warned_at > OBSTACULO_ALTO_AVISO_SEGUNDOS:
+            depth_warned_at = robot.getTime()
+            emit("obstaculo_alto", {"tarea_id": task["tarea_id"], "sectores": depth_hits,
+                                    "detalle": "La camara de profundidad ve un obstaculo por encima del plano del LiDAR (por ejemplo una mesa)."})
     left_distance = scan["left"]
     front_left_distance = scan["front_left"]
     front_distance = scan["front"]
