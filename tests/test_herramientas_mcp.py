@@ -34,6 +34,7 @@ class RobotSimulado:
         self.ultima = None
         self.pendientes = []  # (instante_real, evento, datos)
         self.ordenes = []
+        self.posicion = [3.36, 4.95]
         self.activo = True
         self.hilo = threading.Thread(target=self._bucle, daemon=True)
         self.hilo.start()
@@ -60,7 +61,10 @@ class RobotSimulado:
         self.ordenes.append((cmd, args))
         responder = lambda ok, r=None, e=None: self.puente.responder(cliente, mensaje.get("id"), ok, r, e)  # noqa: E731
         if cmd == "estado":
-            responder(True, {"contexto": {"posicion": [0, 0]}, "tarea": self.tarea, "ultima_tarea": self.ultima})
+            responder(True, {"contexto": {"posicion": list(self.posicion)}, "tarea": self.tarea, "ultima_tarea": self.ultima})
+        elif cmd == "destinos":
+            responder(True, {"destinos": [{"nombre": "ENTREGA_2", "posicion": [3.76, 4.31], "distancia": 0.76},
+                                          {"nombre": "ENTREGA_3", "posicion": [-3.61, 4.31], "distancia": 7.0}]})
         elif cmd == "escanear":
             responder(True, {"lidar": {"front": 0.8}, "lado_sugerido_para_evadir": "LEFT"})
         elif cmd == "parar":
@@ -69,7 +73,7 @@ class RobotSimulado:
                 fin = dict(self.tarea, estado="cancelada", motivo="parar", detalle="parar")
                 self._programar(0, "tarea_terminada", fin)
             responder(True, {"detenido": True})
-        elif cmd in ("ir_a", "girar", "avanzar"):
+        elif cmd in ("ir_a", "ir_a_punto", "girar", "avanzar"):
             if cmd == "ir_a" and args.get("destino") not in ("ENTREGA_2", "ENTREGA_3", "LENTO"):
                 responder(False, e="Destino desconocido")
                 return
@@ -81,7 +85,12 @@ class RobotSimulado:
             if cmd == "ir_a" and args["destino"] == "ENTREGA_3":
                 self._programar(0.05, "evasion_iniciada", {"tarea_id": tid, "direccion": "RIGHT", "intento": 1})
                 self._programar(0.15, "tarea_terminada", dict(self.tarea, estado="fallo", motivo="evasion_sin_salida",
-                                                               detalle="sin salida", fin=self.t + 45, contexto={"modo": "AVOID_TURN"}))
+                                                               detalle="sin salida", fin=self.t + 45,
+                                                               contexto={"modo": "AVOID_TURN", "posicion": list(self.posicion)}))
+            elif cmd == "ir_a_punto":
+                self.posicion = [args["x"], args["y"]]
+                self._programar(0.1, "tarea_terminada", dict(self.tarea, estado="exito", motivo="llego", detalle="ok", fin=self.t + 10,
+                                                             contexto={"posicion": list(self.posicion)}))
             elif cmd == "ir_a" and args["destino"] == "LENTO":
                 self._programar(5.0, "tarea_terminada", dict(self.tarea, estado="exito", motivo="llego", detalle="", fin=self.t + 99))
             else:
@@ -140,6 +149,14 @@ class TestHerramientas(unittest.TestCase):
         hilo.join(timeout=5)
         self.assertEqual((resultado["estado"], resultado["motivo"]), ("cancelada", "parar"))
 
+    def test_ir_a_punto(self):
+        r = herramientas.ir_a_punto(1.5, -2.0)
+        self.assertEqual((r["estado"], r["motivo"]), ("exito", "llego"))
+        self.assertIn(("ir_a_punto", {"x": 1.5, "y": -2.0}), self.robot.ordenes)
+
+    def test_sugerencia_bloqueado_por_seguridad(self):
+        self.assertIn("ir_a_punto", herramientas.SUGERENCIAS["bloqueado_por_seguridad"])
+
     def test_maniobras(self):
         self.assertEqual(herramientas.girar(90)["motivo"], "maniobra_completa")
         self.assertEqual(herramientas.avanzar(-0.3)["motivo"], "maniobra_completa")
@@ -170,7 +187,7 @@ class TestServidorMCP(unittest.TestCase):
 
         nombres, resultado = asyncio.run(flujo())
         self.assertEqual(nombres, ["avanzar", "escanear_entorno", "esperar_tarea", "estado_robot",
-                                   "girar", "ir_a", "listar_destinos", "parar"])
+                                   "girar", "ir_a", "ir_a_punto", "listar_destinos", "parar"])
         self.assertFalse(resultado.is_error)
         datos = resultado.structured_content or json.loads(resultado.content[0].text)
         datos = datos.get("result", datos)

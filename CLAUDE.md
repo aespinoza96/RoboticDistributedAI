@@ -109,16 +109,20 @@ and no other thread touches Webots.
 
 - Request `{"id": 1, "cmd": "ir_a", "args": {"destino": "ENTREGA_3"}}` →
   `{"tipo": "respuesta", "id": 1, "ok": true, "resultado": {...}}` (or `ok: false`, `error`).
-- Commands: `estado`, `destinos`, `escanear`, `ir_a(destino)`, `girar(grados)` (+ = left,
-  max 180), `avanzar(metros)` (negative = reverse, max 1.0), `parar`. Movement commands
-  return a `tarea_id` immediately; the result arrives as an event.
+- Commands: `estado`, `destinos`, `escanear`, `ir_a(destino)`, `ir_a_punto(x, y)`
+  (waypoint in world coordinates, same navigation as `ir_a`, |x|,|y| ≤ 50),
+  `girar(grados)` (+ = left, max 180), `avanzar(metros)` (negative = reverse, max 1.0),
+  `parar`, `volcar_profundidad(ruta)`. Movement commands return a `tarea_id`
+  immediately; the result arrives as an event.
 - Events `{"tipo": "evento", "evento": ..., "t": sim_seconds, "datos": {...}}` go to all
   clients: `tarea_iniciada`, `tarea_terminada`, `evasion_iniciada`, `evasion_terminada`,
   `persona_detectada`, `persona_despejada`, `persona_bloqueando` (warning only, after
   `PERSONA_BLOQUEANDO_SEGUNDOS`), `lidar_sin_datos`.
 - Failure reasons (`motivo`): `sin_espacio_lateral`, `limite_evasiones`,
-  `evasion_sin_salida`, `sin_progreso` (watchdog: navigating without moving
-  `SIN_PROGRESO_DISTANCIA` in `SIN_PROGRESO_SEGUNDOS`), `lidar_sin_datos`,
+  `evasion_sin_salida` (`AVOID_MAX_SECONDS`, 25 s), `bloqueado_por_seguridad` (the
+  safety layer zeroed the navigation command for `BLOQUEO_NAVEGACION_SEGUNDOS`, 5 s;
+  `detalle` names the rule and mode), `sin_progreso` (watchdog: navigating without
+  moving `SIN_PROGRESO_DISTANCIA` in `SIN_PROGRESO_SEGUNDOS`, 20 s), `lidar_sin_datos`,
   `maniobra_bloqueada` (the safety layer blocked a maneuver; `detalle` names the rule),
   `tiempo_agotado`. Success: `llego`, `maniobra_completa`.
 - Maneuvers go through the same final safety layer as everything else. Waiting for a
@@ -126,8 +130,8 @@ and no other thread touches Webots.
 
 ### MCP server (`agente/servidor_mcp.py`)
 
-Tools: `estado_robot`, `listar_destinos`, `escanear_entorno`, `ir_a`, `girar`,
-`avanzar`, `parar`, `esperar_tarea`. Movement tools wait (default) until the task ends
+Tools: `estado_robot`, `listar_destinos`, `escanear_entorno`, `ir_a`, `ir_a_punto`,
+`girar`, `avanzar`, `parar`, `esperar_tarea`. Movement tools wait (default) until the task ends
 and return `estado`, `motivo`, `detalle`, `contexto`, the event timeline and a
 `sugerencia` from `herramientas.SUGERENCIAS`. Each tool call opens its own bridge
 connection and runs in a worker thread, so `parar` works while `ir_a` is waiting.
@@ -142,8 +146,16 @@ and runs the Anthropic SDK tool runner (`claude-opus-5-5`, adaptive thinking, ef
 `high`, server-side `fallbacks: "default"`, auto prompt caching). The model plans,
 acts, recovers and must finish by calling the local `reportar_resultado` tool.
 
-Hard limits enforced in code, not by the prompt: `--max-pasos` (model turns),
-`--max-movimientos` (movement tool calls), `--minutos` (wall clock). If the model never
+Hard limits enforced in code, not by the prompt:
+- **Progress, not count:** the program measures the distance from each movement result's
+  `contexto.posicion` to the current `ir_a` goal (positions from `listar_destinos`).
+  Getting `MEJORA_MINIMA_M` (0.3 m) closer than the best so far resets the counter; each
+  failed navigation (`ir_a`, `ir_a_punto`, `esperar_tarea`) without that is one strike.
+  At `--max-sin-progreso` (3) strikes, movement tools are refused. Every movement result
+  gets a "Progreso: ..." line appended so the model sees its budget.
+- Cost guards: `--max-movimientos` (30), `--max-pasos` (60 model turns), `--minutos` (15).
+The prompt tells the model to plan detours with `ir_a_punto` around `obstaculos_altos`
+and the free side, and to use one maneuver with the total value instead of many small ones. If the model never
 reports (limit, API error, refusal), the program writes a fallback report from the last
 robot result and its `sugerencia`. Any non-success ends with `parar`. Checks the robot
 connection before the first API call. Each run is logged to `agente/registros/` (gitignored).

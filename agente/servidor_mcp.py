@@ -23,9 +23,9 @@ Principios:
   (exito / fallo / cancelada), motivo, detalle, contexto, eventos y una sugerencia.
 - La capa de seguridad del robot siempre tiene la ultima palabra: si dice que no se
   puede, no insistas con la misma accion; cambia de estrategia o informa.
-- Ante un fallo: escanear_entorno, intentar una recuperacion corta (retroceder con
-  avanzar negativo, girar hacia el lado con mas espacio) y reintentar. Tras 3 intentos
-  sin progreso, deten el robot y explica con claridad por que no se puede seguir.
+- Ante un fallo: escanear_entorno y, en vez de repetir lo mismo, rodea el obstaculo con
+  ir_a_punto hacia el lado libre; despues reintenta ir_a. Si tras 3 intentos el robot
+  no se acerca al destino, deten el robot y explica con claridad por que no se puede seguir.
 - Nunca reanudes una tarea que un operador cancelo desde el teclado sin consultar.
 """
 
@@ -67,6 +67,14 @@ async def ir_a(destino: str, esperar: bool = True, timeout_s: float = 300.0) -> 
     final: estado, motivo (llego, sin_espacio_lateral, limite_evasiones, evasion_sin_salida,
     sin_progreso, lidar_sin_datos...), detalle, eventos y sugerencia."""
     return await _en_hilo(herramientas.ir_a, destino, esperar=esperar, timeout_s=timeout_s)
+
+
+@servidor.tool()
+async def ir_a_punto(x: float, y: float, esperar: bool = True, timeout_s: float = 180.0) -> dict:
+    """Navega a un punto (x, y) en metros, en las mismas coordenadas del mundo que
+    estado_robot y listar_destinos. Sirve como punto intermedio para rodear un obstaculo
+    (una mesa, una maquina) antes de seguir con ir_a. Mismo resultado que ir_a."""
+    return await _en_hilo(herramientas.ir_a_punto, x, y, esperar=esperar, timeout_s=timeout_s)
 
 
 @servidor.tool()
