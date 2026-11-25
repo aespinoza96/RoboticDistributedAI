@@ -49,7 +49,7 @@ class TestUbicar(unittest.TestCase):
 
     def test_sin_profundidad_estima_por_tamano(self):
         p = personas.ubicar(caja_para(-20, 4.0), ANCHO, ALTO, FOV, None)
-        self.assertEqual(p["fuente"], "tamano")
+        self.assertEqual(p["fuente"], "tamano_aproximado")
         self.assertAlmostEqual(p["distancia"], 4.0, delta=0.1)
         self.assertAlmostEqual(p["angulo"], -20.0, delta=1.0)
 
@@ -57,7 +57,7 @@ class TestUbicar(unittest.TestCase):
         # Hay una pared a la derecha (puntos), pero la persona esta a la izquierda: no se usa la pared.
         pared = (np.full(30, 1.2), np.linspace(-1.5, -1.0, 30))
         p = personas.ubicar(caja_para(25, 3.0), ANCHO, ALTO, FOV, pared)
-        self.assertEqual(p["fuente"], "tamano")
+        self.assertEqual(p["fuente"], "tamano_aproximado")
 
 
 class TestZonas(unittest.TestCase):

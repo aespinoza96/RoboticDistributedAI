@@ -3,3 +3,7 @@ __pycache__/
 *.pyc
 .venv/
 agente/registros/
+mir100/controllers/keyboard_control/yoloe_personas.pt
+mir100/controllers/keyboard_control/yolo_personas.pt
+mir100/worlds/_*.wbt
+mir100/worlds/._*

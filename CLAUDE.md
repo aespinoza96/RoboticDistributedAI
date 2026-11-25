@@ -80,14 +80,49 @@ Runs one `robot.step()` loop. Each step:
    the raw image for calibration. Verified at the world's table: tabletop seen at
    0.67–0.69 m height where the LiDAR read 0.2–0.3 m farther.
 2. **YOLO + people** (every `YOLO_EVERY_N_STEPS`; camera 640×480, 90°, `far 10` in the
-   world, was 1 m): each person box is located by `personas.ubicar` (bearing from the box,
-   distance from depth points inside the box, else from box height). The robot **passes
-   carefully**: under `PERSONA_LENTO_M` (2 m) speed is capped at `PERSONA_VELOCIDAD`;
-   people become keep-out zones (`PERSONA_ZONA_RADIO` 1.0 m, remembered
-   `PERSONA_MEMORIA_S`) that the planner routes around; forward motion stops only if a
-   person is **ahead** (±`PERSONA_ANGULO_FRENTE`) within `PERSONA_PARADA_M` (0.6 m) —
-   turning stays allowed so the planner can swing around. Only reactive (non-planned)
-   navigation enters `WAIT_PERSON`. Shows an OpenCV window with detections.
+   world, was 1 m). People come from a **dedicated detector** (`DETECTORES_PERSONAS`, first
+   file found): `yoloe_personas.pt` (YOLOE-26s with the class "person" fixed, threshold
+   0.15) else `yolo_personas.pt` (YOLO-World) else YOLO11n at 0.35. Built locally with
+   `construir_detector_personas.py` (not in git; downloads YOLOE weights + MobileCLIP once).
+   Measured on 39 Webots images of the pedestrian (front/profile/back, 1.3–3.8 m): YOLO11n
+   4/39, YOLO-World 14/39, YOLO26s 17/39, YOLOE-26s 23/39. Boxes must be taller than wide
+   (`PERSONA_PROPORCION_MIN`). YOLO11n still labels other objects in the window.
+   Each person box is located by `personas.ubicar` (bearing from the box;
+   distance from depth points inside the box, else LiDAR points, else box height marked
+   `tamano_aproximado`). Detection alone never stops the robot: the rule is **distance**.
+   - **People memory** (`remember_person` / `remembered_people`): detections are kept in
+     world coordinates for `PERSONA_RECUERDO_S` (10 s) and the stop is evaluated **every
+     step** against them. Up close the camera only sees legs and, when passing beside, the
+     person leaves the frame: without memory the robot "forgot" them and drove past.
+     Size-only estimates count only while visible.
+   - **Signals to people** (`avisos.py`): the MiR100's light bands (PROTO field `color`,
+     set live by the Supervisor) are cyan normally, **yellow** with a person within 2 m,
+     **blinking yellow** while asking for way, **orange** if the person didn't move. A beep
+     plays when someone enters 2 m; on a stop the robot says "Hola. Por favor, muévase del
+     camino para que pueda continuar." (macOS `say`, voice `MIR_VOZ`, default Paulina),
+     repeats every 20 s, and says "Gracias. Continúo." when it resumes. Sound plays on the
+     host running Webots; `MIR_SONIDO=0` mutes it.
+   - **Priority stop:** a person at `PERSONA_PARADA_M` (1.0 m) clearance or less, or
+     `PERSONA_PARADA_FRENTE_M` (1.5 m) when ahead (±35°, `person_stop_distance`), stops the
+     robot. The frontal margin exists because the LiDAR puts the person's legs in the map
+     and the planner would otherwise swerve before reaching 1 m. Verified in Webots: stopped
+     1.50 m in front of the pedestrian, located within ~0.15 m of its real position. The
+     YOLO window shows each person's measured clearance and source (red = STOP), and the
+     controller prints `VERSION DEL CONTROLADOR` at start. The stop and starts a `PERSONA_ESPERA_S` (60 s, sim time) wait in
+     `WAIT_PERSON`; event `persona_cerca` (distance, angle, world position). The task
+     **resumes as soon as the person moves away** (no trace from the camera or LiDAR
+     echoes within `PERSONA_RASTRO_M` of where they stood for `PERSONA_LIBRE_S`, 2 s;
+     event `persona_se_aparto`). If they are still there after `PERSONA_ESPERA_S` (60 s) it
+     ends `detenida` / `persona_sigue_cerca`. Verified in Webots with a walking pedestrian:
+     stopped at 1.5 m, then resumed ~7 s later when they had walked away. New orders during the wait also wait. Fires once per
+     encounter; re-arms beyond `PERSONA_REARME_M` (1.3 m) or out of view.
+   - Under `PERSONA_LENTO_M` (2 m) speed is capped at `PERSONA_VELOCIDAD`; forward motion
+     is blocked for a person ahead (±`PERSONA_ANGULO_FRENTE`) within the stop distance.
+   - **The route does not change for people by default** (`al_ver_persona="continuar"`):
+     keep-out zones used to close corridors (worse with size-estimated distances) so the
+     robot never approached. With `al_ver_persona="rodear"` people become 1.0 m zones
+     (`PERSONA_ZONA_RADIO`, remembered `PERSONA_MEMORIA_S`) the planner avoids.
+   Shows an OpenCV window with detections.
 3. **Keyboard**: `1/2/3` start a route to ENTREGA_1/2/3, `0`/space cancel, arrows give
    manual control (only when not navigating).
 4. **State machine** (`mode`):
@@ -141,8 +176,18 @@ and no other thread touches Webots.
   current map, no motion), `ir_a(destino)`, `ir_a_punto(x, y)`
   (waypoint in world coordinates, same navigation as `ir_a`, |x|,|y| ≤ 50),
   `girar(grados)` (+ = left, max 180), `avanzar(metros)` (negative = reverse, max 1.0),
-  `parar`, `volcar_profundidad(ruta)`, `volcar_mapa(ruta.npz)`. Movement commands return a `tarea_id`
+  `parar`, `volcar_profundidad(ruta)`, `volcar_mapa(ruta.npz)`, `volcar_camara(ruta.png, cruda)`
+  (camera frame + YOLO11n detections at 0.10, for diagnosis). Movement commands return a `tarea_id`
   immediately; the result arrives as an event.
+- **Per-order options** on `ir_a`, `ir_a_punto`, `girar`, `avanzar` (`parse_task_options`):
+  `velocidad` (0.05–0.40 m/s, plan speed), `al_ver_persona` = `continuar` (default) | `rodear` |
+  `detenerse` (task ends with `estado: "detenida"`, `motivo: "persona_a_la_vista"` as
+  soon as a person is within `distancia_persona`) | `esperar` (forward stops while a
+  person is ahead within `distancia_persona`, also in plan mode, then resumes), and
+  `distancia_persona` (0.3–10 m, default 3). Non-default options are recorded in the
+  task's `args`. People are located with depth, then **LiDAR** points inside the box
+  (legs cut the scan plane), then box height (`fuente: "tamano_aproximado"`, capped at
+  the camera's 10 m); `contexto.personas` includes world `posicion`.
 - Events `{"tipo": "evento", "evento": ..., "t": sim_seconds, "datos": {...}}` go to all
   clients: `tarea_iniciada`, `tarea_terminada`, `evasion_iniciada`, `evasion_terminada`,
   `persona_detectada` (first sighting, with clearance/angle), `persona_en_el_camino`,
@@ -161,7 +206,10 @@ and no other thread touches Webots.
 ### MCP server (`agente/servidor_mcp.py`)
 
 Tools: `estado_robot`, `listar_destinos`, `escanear_entorno`, `distancia_por_ruta`, `ir_a`, `ir_a_punto`,
-`girar`, `avanzar`, `parar`, `esperar_tarea`. Movement tools wait (default) until the task ends
+`girar`, `avanzar`, `parar`, `esperar_tarea`. Movement tools take the per-order options
+above, plus `interrumpir_con` (event names, e.g. `persona_detectada`, `obstaculo_alto`):
+the wait returns early with `estado: "en_curso"`, `interrumpida_por` and the event while
+the task keeps running, so the agent can decide mid-task. They wait (default) until the task ends
 and return `estado`, `motivo`, `detalle`, `contexto`, the event timeline and a
 `sugerencia` from `herramientas.SUGERENCIAS`. Each tool call opens its own bridge
 connection and runs in a worker thread, so `parar` works while `ir_a` is waiting.

@@ -36,6 +36,8 @@ class RobotSimulado:
         self.ordenes = []
         self.posicion = [3.36, 4.95]
         self.motivo_e3 = "evasion_sin_salida"
+        self.estado_e3 = "fallo"
+        self.persona_en_ruta = False
         # (metros_por_ruta o None, mapa_conocido_m2) para el comando "ruta"; por defecto linea recta.
         self.ruta_fn = lambda pos, meta: (((pos[0] - meta[0]) ** 2 + (pos[1] - meta[1]) ** 2) ** 0.5, 50.0)
         self.activo = True
@@ -90,9 +92,14 @@ class RobotSimulado:
             self.tarea = {"tarea_id": tid, "tipo": cmd, "args": args, "estado": "en_curso", "inicio": self.t}
             responder(True, {"tarea_id": tid})
             self._programar(0, "tarea_iniciada", dict(self.tarea))
-            if cmd == "ir_a" and args["destino"] == "ENTREGA_3":
+            if cmd == "ir_a" and args["destino"] == "ENTREGA_3" and self.persona_en_ruta:
+                self._programar(0.05, "persona_cerca", {"tarea_id": tid, "holgura": 0.8, "angulo": 5, "posicion": [1.0, 4.5],
+                                                       "espera_s": 60.0, "detalle": "Persona a 0.80 m: el robot se detuvo y espera 60 s"})
+                self._programar(0.3, "tarea_terminada", dict(self.tarea, estado="exito", motivo="llego", detalle="ok", fin=self.t + 70,
+                                                             contexto={"posicion": [-3.6, 4.3]}))
+            elif cmd == "ir_a" and args["destino"] == "ENTREGA_3":
                 self._programar(0.05, "evasion_iniciada", {"tarea_id": tid, "direccion": "RIGHT", "intento": 1})
-                self._programar(0.15, "tarea_terminada", dict(self.tarea, estado="fallo", motivo=self.motivo_e3,
+                self._programar(0.15, "tarea_terminada", dict(self.tarea, estado=self.estado_e3, motivo=self.motivo_e3,
                                                                detalle="sin salida", fin=self.t + 45,
                                                                contexto={"modo": "AVOID_TURN", "posicion": list(self.posicion)}))
             elif cmd == "ir_a_punto":
@@ -156,6 +163,35 @@ class TestHerramientas(unittest.TestCase):
         self.assertTrue(herramientas.parar()["detenido"])
         hilo.join(timeout=5)
         self.assertEqual((resultado["estado"], resultado["motivo"]), ("cancelada", "parar"))
+
+    def test_opciones_llegan_al_robot_y_las_vacias_no(self):
+        herramientas.ir_a("ENTREGA_2", velocidad=0.15, al_ver_persona="detenerse", distancia_persona=2.0)
+        self.assertIn(("ir_a", {"destino": "ENTREGA_2", "velocidad": 0.15, "al_ver_persona": "detenerse",
+                                "distancia_persona": 2.0}), self.robot.ordenes)
+        herramientas.girar(30)
+        self.assertIn(("girar", {"grados": 30}), self.robot.ordenes)
+
+    def test_interrumpir_con_evento_corta_la_espera(self):
+        r = herramientas.ir_a("ENTREGA_3", interrumpir_con=["evasion_iniciada"])
+        self.assertEqual((r["estado"], r["interrumpida_por"]), ("en_curso", "evasion_iniciada"))
+        self.assertEqual(r["evento"]["direccion"], "RIGHT")
+        final = herramientas.esperar_tarea(r["tarea_id"], timeout_s=5)
+        self.assertEqual(final["motivo"], "evasion_sin_salida")
+
+    def test_persona_cerca_corta_la_espera_siempre(self):
+        self.robot.persona_en_ruta = True
+        r = herramientas.ir_a("ENTREGA_3")                       # sin pedir interrumpir_con
+        self.assertEqual((r["estado"], r["interrumpida_por"]), ("en_curso", "persona_cerca"))
+        self.assertIn("60 s", r["detalle"])
+        self.assertIn("PRIORIDAD", r["sugerencia"])
+        final = herramientas.esperar_tarea(r["tarea_id"], timeout_s=5)   # la tarea sigue y termina
+        self.assertEqual(final["motivo"], "llego")
+
+    def test_persona_sigue_cerca_trae_sugerencia(self):
+        self.robot.estado_e3, self.robot.motivo_e3 = "detenida", "persona_sigue_cerca"
+        r = herramientas.ir_a("ENTREGA_3")
+        self.assertEqual((r["estado"], r["motivo"]), ("detenida", "persona_sigue_cerca"))
+        self.assertIn("rodea", r["sugerencia"])
 
     def test_ir_a_punto(self):
         r = herramientas.ir_a_punto(1.5, -2.0)

@@ -64,6 +64,28 @@ Limites:
   hacia zonas que el robot aun no vio (a 2-4 m, hacia el lado libre) y vuelve a probar.
   Solo al llegar al limite de intentos sin avance, deten el robot con parar y reporta el
   fallo con lo que aprendiste del entorno.
+- PRIORIDAD de seguridad: si el robot ve una persona a 1 m o menos, se DETIENE solo y espera
+  60 s; la herramienta en curso vuelve en ese momento con estado "en_curso" e
+  interrumpida_por "persona_cerca" (distancia, angulo y posicion de la persona). Eso no es
+  un fallo: anota que el robot se detuvo por una persona y dilo en el reporte. Despues:
+  * si la orden pedia detenerse ante personas, esta cumplida: llama a parar y reporta;
+  * si no, llama a esperar_tarea con el mismo tarea_id: el robot le pide paso en voz alta
+    y retoma la tarea solo en cuanto la persona se aparta (evento persona_se_aparto); si
+    a los 60 s sigue ahi, la tarea termina "detenida" con motivo "persona_sigue_cerca" y
+    decides tu (rodearla o reportar). Una orden nueva
+    durante la espera tambien espera; nunca avances hacia la persona.
+- Ordenes con condiciones: las herramientas de movimiento aceptan opciones.
+  * Personas: al_ver_persona="detenerse" (la orden termina sola al ver a alguien, estado
+    "detenida"; con distancia_persona eliges a que distancia), "esperar" (frena mientras
+    haya alguien delante y sigue despues), "rodear" (la ruta evita a la persona) o
+    "continuar" (por defecto: mantiene la ruta y va despacio cerca). Usalas siempre que la
+    orden diga que hacer ante personas. Para BUSCAR a alguien: girar en pasos de 90-120
+    grados con al_ver_persona="detenerse", y explorar con ir_a_punto si no aparece.
+  * Velocidad: velocidad=0.1-0.2 m/s si la orden pide ir con cuidado o despacio.
+  * interrumpir_con=["persona_detectada", "obstaculo_alto", ...] corta la espera (la
+    tarea sigue) para que decidas en el medio cuando la condicion no encaja en las opciones.
+  La posicion de una persona viene en contexto.personas; si su fuente es
+  "tamano_aproximado", la distancia es solo una estimacion: dilo asi en el reporte.
 - Si una persona bloquea el camino, espera (esperar_tarea) en lugar de esquivarla a la
   fuerza; si sigue bloqueando mucho tiempo, reportalo.
 - Si un operador cancelo la tarea desde el teclado, no la reanudes: reporta.
@@ -152,7 +174,7 @@ class Mision:
             self.mejor_distancia = distancia
         elif self.mejor_distancia is None or distancia < self.mejor_distancia - MEJORA_MINIMA_M:
             self.intentos_sin_progreso = 0
-        elif herramienta in HERRAMIENTAS_DE_NAVEGACION and datos.get("estado") != "exito" and datos.get("motivo") != "sin_ruta":
+        elif herramienta in HERRAMIENTAS_DE_NAVEGACION and datos.get("estado") == "fallo" and datos.get("motivo") != "sin_ruta":
             self.intentos_sin_progreso += 1
         if self.mejor_distancia is None or distancia < self.mejor_distancia:
             self.mejor_distancia = distancia
@@ -348,11 +370,10 @@ async def ejecutar(orden, max_pasos, max_movimientos, minutos, esfuerzo, max_sin
                         elif bloque.type == "tool_use":
                             mision.registrar("llamada", herramienta=bloque.name, entrada=bloque.input)
                             imprimir(" -> {}({})".format(bloque.name, json.dumps(bloque.input, ensure_ascii=False)))
+                    # Sin "break": el runner termina solo cuando el modelo deja de pedir
+                    # herramientas; cortarlo a mano dejaba un error al cerrar el generador.
                     if mensaje.stop_reason == "refusal":
                         mision.registrar("rechazo", detalle=str(getattr(mensaje, "stop_details", "")))
-                        break
-                    if mision.reporte is not None and mensaje.stop_reason != "tool_use":
-                        break
             except anthropic.APIStatusError as error:
                 mision.registrar("error_api", estado=error.status_code, mensaje=str(error))
                 mision.reporte = mision.reporte or mision.reporte_de_respaldo("error_api", "La API de Claude devolvio un error {}: {}".format(error.status_code, error.message))

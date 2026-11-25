@@ -27,6 +27,10 @@ Principios:
   ir_a_punto hacia el lado libre; despues reintenta ir_a. Si tras 3 intentos el robot
   no se acerca al destino, deten el robot y explica con claridad por que no se puede seguir.
 - Nunca reanudes una tarea que un operador cancelo desde el teclado sin consultar.
+- PRIORIDAD: si el robot ve una persona a 1 m o menos se detiene solo, espera 60 s y luego
+  retoma la tarea (si la persona sigue cerca, la tarea termina "detenida" con motivo
+  "persona_sigue_cerca"). La herramienta en curso vuelve al instante con interrumpida_por
+  "persona_cerca": informalo siempre y usa esperar_tarea para seguir.
 """
 
 servidor = MCPServer(name="mir100", title="Robot MiR100 (Webots)", instructions=INSTRUCCIONES)
@@ -69,35 +73,85 @@ async def distancia_por_ruta(destino: str) -> dict:
 
 
 @servidor.tool()
-async def ir_a(destino: str, esperar: bool = True, timeout_s: float = 300.0) -> dict:
-    """Navega a un destino de entrega ("ENTREGA_3", "entrega 3" o "3"). El robot gira hacia
-    el destino, avanza y esquiva obstaculos solo. Con esperar=true devuelve el resultado
-    final: estado, motivo (llego, sin_espacio_lateral, limite_evasiones, evasion_sin_salida,
-    sin_progreso, lidar_sin_datos...), detalle, eventos y sugerencia."""
-    return await _en_hilo(herramientas.ir_a, destino, esperar=esperar, timeout_s=timeout_s)
+async def ir_a(destino: str, esperar: bool = True, timeout_s: float = 300.0, velocidad: float | None = None,
+               al_ver_persona: str | None = None, distancia_persona: float | None = None,
+               interrumpir_con: list[str] | None = None) -> dict:
+    """Navega a un destino de entrega ("ENTREGA_3", "entrega 3" o "3") planificando la ruta
+    sobre el mapa que el robot va armando. Con esperar=true devuelve el resultado final:
+    estado (exito / fallo / cancelada / detenida), motivo, detalle, contexto, eventos y
+    sugerencia. velocidad: m/s maxima (0.05-0.40, defecto 0.30).
+    Opciones (todas opcionales):
+    - al_ver_persona: "continuar" (por defecto: mantiene la ruta y va despacio cerca),
+      "rodear" (la persona es una zona de 1 m que la ruta evita), "detenerse" (la
+      orden TERMINA en cuanto ve una persona a distancia_persona o menos: estado
+      "detenida", motivo "persona_a_la_vista") o "esperar" (frena mientras haya una persona
+      delante a distancia_persona o menos y sigue cuando se aparta).
+    - distancia_persona: metros de holgura para "detenerse"/"esperar" (defecto 3).
+    - interrumpir_con: eventos que cortan la ESPERA (no la tarea) para decidir en el medio,
+      p. ej. ["persona_detectada", "obstaculo_alto"]: devuelve estado "en_curso" con
+      interrumpida_por; despues parar, esperar_tarea u otra orden."""
+    return await _en_hilo(herramientas.ir_a, destino, esperar=esperar, timeout_s=timeout_s, velocidad=velocidad,
+                          al_ver_persona=al_ver_persona, distancia_persona=distancia_persona, interrumpir_con=interrumpir_con)
 
 
 @servidor.tool()
-async def ir_a_punto(x: float, y: float, esperar: bool = True, timeout_s: float = 180.0) -> dict:
-    """Navega a un punto (x, y) en metros, en las mismas coordenadas del mundo que
-    estado_robot y listar_destinos. Sirve como punto intermedio para rodear un obstaculo
-    (una mesa, una maquina) antes de seguir con ir_a. Mismo resultado que ir_a."""
-    return await _en_hilo(herramientas.ir_a_punto, x, y, esperar=esperar, timeout_s=timeout_s)
+async def ir_a_punto(x: float, y: float, esperar: bool = True, timeout_s: float = 180.0, velocidad: float | None = None,
+                     al_ver_persona: str | None = None, distancia_persona: float | None = None,
+                     interrumpir_con: list[str] | None = None) -> dict:
+    """Navega a un punto (x, y) en metros, en las coordenadas del mundo de estado_robot y
+    listar_destinos. Sirve como punto intermedio para rodear o para explorar. Mismo
+    resultado y opciones que ir_a.
+    Opciones (todas opcionales):
+    - al_ver_persona: "continuar" (por defecto: mantiene la ruta y va despacio cerca),
+      "rodear" (la persona es una zona de 1 m que la ruta evita), "detenerse" (la
+      orden TERMINA en cuanto ve una persona a distancia_persona o menos: estado
+      "detenida", motivo "persona_a_la_vista") o "esperar" (frena mientras haya una persona
+      delante a distancia_persona o menos y sigue cuando se aparta).
+    - distancia_persona: metros de holgura para "detenerse"/"esperar" (defecto 3).
+    - interrumpir_con: eventos que cortan la ESPERA (no la tarea) para decidir en el medio,
+      p. ej. ["persona_detectada", "obstaculo_alto"]: devuelve estado "en_curso" con
+      interrumpida_por; despues parar, esperar_tarea u otra orden."""
+    return await _en_hilo(herramientas.ir_a_punto, x, y, esperar=esperar, timeout_s=timeout_s, velocidad=velocidad,
+                          al_ver_persona=al_ver_persona, distancia_persona=distancia_persona, interrumpir_con=interrumpir_con)
 
 
 @servidor.tool()
-async def girar(grados: float, esperar: bool = True) -> dict:
+async def girar(grados: float, esperar: bool = True, al_ver_persona: str | None = None,
+                distancia_persona: float | None = None, interrumpir_con: list[str] | None = None) -> dict:
     """Gira en el lugar. Positivo = izquierda, negativo = derecha, maximo 180 en valor
-    absoluto. Util para orientarse hacia el lado libre antes de reintentar ir_a. Cancela
-    la tarea en curso."""
-    return await _en_hilo(herramientas.girar, grados, esperar=esperar)
+    absoluto. Para BUSCAR a alguien: girar con al_ver_persona="detenerse" para que pare
+    mirando a la primera persona que vea. Cancela la tarea en curso.
+    Opciones (todas opcionales):
+    - al_ver_persona: "continuar" (por defecto: mantiene la ruta y va despacio cerca),
+      "rodear" (la persona es una zona de 1 m que la ruta evita), "detenerse" (la
+      orden TERMINA en cuanto ve una persona a distancia_persona o menos: estado
+      "detenida", motivo "persona_a_la_vista") o "esperar" (frena mientras haya una persona
+      delante a distancia_persona o menos y sigue cuando se aparta).
+    - distancia_persona: metros de holgura para "detenerse"/"esperar" (defecto 3).
+    - interrumpir_con: eventos que cortan la ESPERA (no la tarea) para decidir en el medio,
+      p. ej. ["persona_detectada", "obstaculo_alto"]: devuelve estado "en_curso" con
+      interrumpida_por; despues parar, esperar_tarea u otra orden."""
+    return await _en_hilo(herramientas.girar, grados, esperar=esperar, al_ver_persona=al_ver_persona,
+                          distancia_persona=distancia_persona, interrumpir_con=interrumpir_con)
 
 
 @servidor.tool()
-async def avanzar(metros: float, esperar: bool = True) -> dict:
+async def avanzar(metros: float, esperar: bool = True, al_ver_persona: str | None = None,
+                  distancia_persona: float | None = None, interrumpir_con: list[str] | None = None) -> dict:
     """Avanza en linea recta; negativo = retroceder. Maximo 1.0 m en valor absoluto. Util
-    para salir de un atasco (retroceder 0.3-0.5 m). Cancela la tarea en curso."""
-    return await _en_hilo(herramientas.avanzar, metros, esperar=esperar)
+    para salir de un atasco. Cancela la tarea en curso.
+    Opciones (todas opcionales):
+    - al_ver_persona: "continuar" (por defecto: mantiene la ruta y va despacio cerca),
+      "rodear" (la persona es una zona de 1 m que la ruta evita), "detenerse" (la
+      orden TERMINA en cuanto ve una persona a distancia_persona o menos: estado
+      "detenida", motivo "persona_a_la_vista") o "esperar" (frena mientras haya una persona
+      delante a distancia_persona o menos y sigue cuando se aparta).
+    - distancia_persona: metros de holgura para "detenerse"/"esperar" (defecto 3).
+    - interrumpir_con: eventos que cortan la ESPERA (no la tarea) para decidir en el medio,
+      p. ej. ["persona_detectada", "obstaculo_alto"]: devuelve estado "en_curso" con
+      interrumpida_por; despues parar, esperar_tarea u otra orden."""
+    return await _en_hilo(herramientas.avanzar, metros, esperar=esperar, al_ver_persona=al_ver_persona,
+                          distancia_persona=distancia_persona, interrumpir_con=interrumpir_con)
 
 
 @servidor.tool()
@@ -107,10 +161,10 @@ async def parar() -> dict:
 
 
 @servidor.tool()
-async def esperar_tarea(tarea_id: int, timeout_s: float = 120.0) -> dict:
+async def esperar_tarea(tarea_id: int, timeout_s: float = 120.0, interrumpir_con: list[str] | None = None) -> dict:
     """Espera el final de una tarea lanzada con esperar=false (o cuya espera se agoto)
     y devuelve su resultado."""
-    return await _en_hilo(herramientas.esperar_tarea, tarea_id, timeout_s=timeout_s)
+    return await _en_hilo(herramientas.esperar_tarea, tarea_id, timeout_s=timeout_s, interrumpir_con=interrumpir_con)
 
 
 if __name__ == "__main__":

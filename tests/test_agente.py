@@ -192,6 +192,18 @@ class TestAgente(unittest.TestCase):
         self.assertEqual(mision.intentos_sin_progreso, 0)
         self.assertIn("SIN RUTA", agente.texto_de_resultado(cliente.runner.resultados[-1][1]))
 
+    def test_espera_interrumpida_no_cuenta_como_intento(self):
+        guion = [[bloque_herramienta("ir_a", {"destino": "ENTREGA_3", "interrumpir_con": ["evasion_iniciada"]}, n)] for n in range(5)]
+        mision, _ = self.correr(guion, max_movimientos=30)
+        self.assertEqual(mision.intentos_sin_progreso, 0)
+
+    def test_persona_cerca_no_cuenta_como_intento(self):
+        self.robot.estado_e3, self.robot.motivo_e3 = "detenida", "persona_cerca"
+        guion = [[bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, n)] for n in range(5)]
+        mision, _ = self.correr(guion, max_movimientos=30)
+        self.assertEqual(mision.intentos_sin_progreso, 0)
+        self.assertEqual(mision.ultimo_resultado_robot["motivo"], "persona_cerca")
+
     def test_limite_de_movimientos(self):
         guion = [[bloque_herramienta("girar", {"grados": 10}, n)] for n in range(4)]
         mision, cliente = self.correr(guion, max_movimientos=2)
