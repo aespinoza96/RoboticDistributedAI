@@ -25,7 +25,7 @@ SUGERENCIAS = {
     "limite_evasiones": "El robot esquivo varias veces sin llegar. Prueba retroceder, girar hacia el lado con mas espacio (escanear_entorno) y reintentar ir_a; si se repite, la ruta probablemente esta bloqueada.",
     "evasion_sin_salida": "La evasion no encontro salida. Prueba retroceder 0.5 m, girar 45-90 grados hacia el lado con mas espacio y reintentar ir_a.",
     "bloqueado_por_seguridad": "La seguridad freno la navegacion (ver detalle: que regla y en que modo). Mira obstaculos_altos en escanear_entorno y rodea el obstaculo con ir_a_punto hacia un lado libre, en vez de reintentar ir_a igual.",
-    "persona_cerca": "PRIORIDAD: el robot vio una persona a 1 m o menos, se detuvo y espera 60 s; despues retoma la tarea solo si la persona se aparto. Informa al operador. Usa esperar_tarea para seguir la tarea, o parar si la orden lo pide.",
+    "persona_cerca": "PRIORIDAD: el robot vio una persona cerca, se detuvo y le pidio paso en voz alta; retoma la tarea solo en cuanto la persona se aparta (maximo 60 s). Informa al operador. Usa esperar_tarea para seguir la tarea, o parar si la orden lo pide.",
     "persona_sigue_cerca": "Tras la espera de 60 s la persona sigue a 1 m o menos y el robot quedo detenido. Informa al operador; para seguir, rodea a la persona (girar o retroceder y luego ir_a / ir_a_punto) o espera.",
     "persona_a_la_vista": "El robot se detuvo al ver a una persona, como se pidio (ver detalle: distancia, angulo y posicion). Sigue la orden segun lo que pidio el operador.",
     "sin_ruta": "El mapa no tiene camino libre hacia el destino con lo que conoce. Explora con ir_a_punto hacia zonas que el robot aun no vio (por ejemplo por el otro extremo del obstaculo) y vuelve a intentar; si todo esta cerrado, reportalo.",

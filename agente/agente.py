@@ -69,9 +69,10 @@ Limites:
   interrumpida_por "persona_cerca" (distancia, angulo y posicion de la persona). Eso no es
   un fallo: anota que el robot se detuvo por una persona y dilo en el reporte. Despues:
   * si la orden pedia detenerse ante personas, esta cumplida: llama a parar y reporta;
-  * si no, llama a esperar_tarea con el mismo tarea_id: pasados los 60 s el robot retoma
-    la tarea solo si la persona se aparto; si sigue cerca, la tarea termina "detenida"
-    con motivo "persona_sigue_cerca" y decides tu (rodearla o reportar). Una orden nueva
+  * si no, llama a esperar_tarea con el mismo tarea_id: el robot le pide paso en voz alta
+    y retoma la tarea solo en cuanto la persona se aparta (evento persona_se_aparto); si
+    a los 60 s sigue ahi, la tarea termina "detenida" con motivo "persona_sigue_cerca" y
+    decides tu (rodearla o reportar). Una orden nueva
     durante la espera tambien espera; nunca avances hacia la persona.
 - Ordenes con condiciones: las herramientas de movimiento aceptan opciones.
   * Personas: al_ver_persona="detenerse" (la orden termina sola al ver a alguien, estado

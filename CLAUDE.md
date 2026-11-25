@@ -95,6 +95,13 @@ Runs one `robot.step()` loop. Each step:
      step** against them. Up close the camera only sees legs and, when passing beside, the
      person leaves the frame: without memory the robot "forgot" them and drove past.
      Size-only estimates count only while visible.
+   - **Signals to people** (`avisos.py`): the MiR100's light bands (PROTO field `color`,
+     set live by the Supervisor) are cyan normally, **yellow** with a person within 2 m,
+     **blinking yellow** while asking for way, **orange** if the person didn't move. A beep
+     plays when someone enters 2 m; on a stop the robot says "Hola. Por favor, muévase del
+     camino para que pueda continuar." (macOS `say`, voice `MIR_VOZ`, default Paulina),
+     repeats every 20 s, and says "Gracias. Continúo." when it resumes. Sound plays on the
+     host running Webots; `MIR_SONIDO=0` mutes it.
    - **Priority stop:** a person at `PERSONA_PARADA_M` (1.0 m) clearance or less, or
      `PERSONA_PARADA_FRENTE_M` (1.5 m) when ahead (±35°, `person_stop_distance`), stops the
      robot. The frontal margin exists because the LiDAR puts the person's legs in the map
@@ -102,9 +109,12 @@ Runs one `robot.step()` loop. Each step:
      1.50 m in front of the pedestrian, located within ~0.15 m of its real position. The
      YOLO window shows each person's measured clearance and source (red = STOP), and the
      controller prints `VERSION DEL CONTROLADOR` at start. The stop and starts a `PERSONA_ESPERA_S` (60 s, sim time) wait in
-     `WAIT_PERSON`; event `persona_cerca` (distance, angle, world position). After the
-     wait the task resumes if the person moved away, else it ends `detenida` /
-     `persona_sigue_cerca`. New orders during the wait also wait. Fires once per
+     `WAIT_PERSON`; event `persona_cerca` (distance, angle, world position). The task
+     **resumes as soon as the person moves away** (no trace from the camera or LiDAR
+     echoes within `PERSONA_RASTRO_M` of where they stood for `PERSONA_LIBRE_S`, 2 s;
+     event `persona_se_aparto`). If they are still there after `PERSONA_ESPERA_S` (60 s) it
+     ends `detenida` / `persona_sigue_cerca`. Verified in Webots with a walking pedestrian:
+     stopped at 1.5 m, then resumed ~7 s later when they had walked away. New orders during the wait also wait. Fires once per
      encounter; re-arms beyond `PERSONA_REARME_M` (1.3 m) or out of view.
    - Under `PERSONA_LENTO_M` (2 m) speed is capped at `PERSONA_VELOCIDAD`; forward motion
      is blocked for a person ahead (±`PERSONA_ANGULO_FRENTE`) within the stop distance.
