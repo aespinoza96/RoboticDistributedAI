@@ -22,6 +22,7 @@ SUGERENCIAS = {
     "sin_espacio_lateral": "Obstaculo al frente sin espacio para girar. Prueba escanear_entorno, retroceder 0.3-0.5 m con avanzar(metros negativos) y volver a intentar ir_a.",
     "limite_evasiones": "El robot esquivo varias veces sin llegar. Prueba retroceder, girar hacia el lado con mas espacio (escanear_entorno) y reintentar ir_a; si se repite, la ruta probablemente esta bloqueada.",
     "evasion_sin_salida": "La evasion no encontro salida. Prueba retroceder 0.5 m, girar 45-90 grados hacia el lado con mas espacio y reintentar ir_a.",
+    "bloqueado_por_seguridad": "La seguridad freno la navegacion (ver detalle: que regla y en que modo). Mira obstaculos_altos en escanear_entorno y rodea el obstaculo con ir_a_punto hacia un lado libre, en vez de reintentar ir_a igual.",
     "sin_progreso": "El robot no se desplazo. Revisa escanear_entorno: puede estar encajado; prueba retroceder o girar antes de reintentar.",
     "lidar_sin_datos": "El LiDAR no da lecturas suficientes. No es seguro moverse; informa el problema en lugar de insistir.",
     "maniobra_bloqueada": "La seguridad impidio la maniobra (ver detalle). Elige otra maniobra hacia el lado libre o informa que el robot esta encajado.",
@@ -111,6 +112,10 @@ def escanear_entorno(puerto=None):
 
 def ir_a(destino, esperar=True, timeout_s=300.0, puerto=None, al_evento=None):
     return _orden(puerto, "ir_a", esperar, timeout_s, al_evento, destino=destino)
+
+
+def ir_a_punto(x, y, esperar=True, timeout_s=180.0, puerto=None, al_evento=None):
+    return _orden(puerto, "ir_a_punto", esperar, timeout_s, al_evento, x=x, y=y)
 
 
 def girar(grados, esperar=True, timeout_s=60.0, puerto=None, al_evento=None):

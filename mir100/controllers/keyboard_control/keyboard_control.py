@@ -70,7 +70,7 @@ SIDE_KP = 0.32
 AVOID_FORWARD_SPEED = 0.13
 AVOID_TURN_SPEED = 0.25
 AVOID_MIN_TRAVEL = 1.00            # Distancia minima recorrida antes de volver a apuntar al destino.
-AVOID_MAX_SECONDS = 45.0          # No insistir indefinidamente ante una ruta bloqueada.
+AVOID_MAX_SECONDS = 25.0          # No insistir indefinidamente ante una ruta bloqueada.
 AVOID_HEADING_TOLERANCE = 0.30
 MAX_AVOID_ATTEMPTS = 8
 
@@ -96,7 +96,9 @@ PUENTE_ACTIVO = True
 PUENTE_PUERTO = int(os.getenv("MIR_PUENTE_PUERTO", "5555"))
 
 # Vigilancia de tareas: convierte bloqueos silenciosos en fallos con motivo.
-SIN_PROGRESO_SEGUNDOS = 40.0       # Navegando sin moverse SIN_PROGRESO_DISTANCIA en este tiempo = fallo.
+SIN_PROGRESO_SEGUNDOS = 20.0       # Navegando sin moverse SIN_PROGRESO_DISTANCIA en este tiempo = fallo.
+BLOQUEO_NAVEGACION_SEGUNDOS = 5.0  # La seguridad frenando la navegacion este tiempo = fallo con la regla exacta.
+PUNTO_MAX_COORDENADA = 50.0        # ir_a_punto: limite de cordura para x e y (m).
 SIN_PROGRESO_DISTANCIA = 0.10
 LIDAR_SIN_DATOS_SEGUNDOS = 10.0    # LiDAR sin lecturas suficientes durante una tarea = fallo.
 PERSONA_BLOQUEANDO_SEGUNDOS = 15.0 # Aviso (no fallo) si una persona frena la tarea tanto tiempo.
@@ -132,8 +134,9 @@ def planar_position(node):
     return position - np.dot(position, up) * up
 
 
-def goal_geometry(robot_node, destination_node):
-    displacement = planar_position(destination_node) - planar_position(robot_node)
+def goal_geometry(robot_node, target):
+    # target: punto en el plano del suelo (np.array de 3, como planar_position).
+    displacement = target - planar_position(robot_node)
     distance = float(np.linalg.norm(displacement))
     if distance < 0.0001:
         return distance, 0.0
@@ -343,6 +346,7 @@ safety_block = None
 progress_position = None
 progress_time = 0.0
 lidar_bad_since = None
+nav_blocked_since = None
 person_since = None
 person_warned = False
 
@@ -412,12 +416,15 @@ def stop_navigation():
     manual_omega = 0.0
 
 
-def start_navigation(name):
+def start_navigation(name, target=None):
+    # name: DEF de una entrega, o etiqueta de un punto (target dado en coordenadas).
     global navigation_active, current_destination, current_destination_name, mode, saved_mode
     global avoid_attempts, manual_speed, manual_omega, maneuver, progress_position, progress_time, lidar_bad_since
+    global nav_blocked_since
     maneuver = None
     lidar_bad_since = None
-    current_destination = destination_by_name[name]
+    nav_blocked_since = None
+    current_destination = planar_position(destination_by_name[name]) if target is None else target
     current_destination_name = name
     navigation_active = True
     mode = MODE_WAIT_PERSON if person_detected else MODE_GOAL
@@ -493,6 +500,19 @@ def handle_command(client, message):
             task_id = start_task("ir_a", {"destino": name}, "puente")
             start_navigation(name)
             ok({"tarea_id": task_id, "destino": name})
+        elif cmd == "ir_a_punto":
+            # Punto intermedio (waypoint) en coordenadas del mundo, para rodear obstaculos.
+            x, y = float(args.get("x")), float(args.get("y"))
+            if not (math.isfinite(x) and math.isfinite(y)) or abs(x) > PUNTO_MAX_COORDENADA or abs(y) > PUNTO_MAX_COORDENADA:
+                fail("'x' e 'y' deben ser numeros finitos de como maximo {} en valor absoluto".format(PUNTO_MAX_COORDENADA))
+                return
+            up = axis_vector("+" + WORLD_UP_AXIS)
+            target = np.array([x, y, 0.0]) if WORLD_UP_AXIS == "Z" else np.array([x, 0.0, y])
+            target = target - np.dot(target, up) * up
+            label = "PUNTO({:.2f}, {:.2f})".format(x, y)
+            task_id = start_task("ir_a_punto", {"x": x, "y": y}, "puente")
+            start_navigation(label, target)
+            ok({"tarea_id": task_id, "destino": label})
         elif cmd in ("girar", "avanzar"):
             key, limit = ("grados", MANIOBRA_MAX_GRADOS) if cmd == "girar" else ("metros", MANIOBRA_MAX_METROS)
             amount = float(args.get(key, 0.0))
@@ -509,7 +529,7 @@ def handle_command(client, message):
             maneuver = None
             ok({"detenido": True, "habia_tarea": had_task})
         else:
-            fail("Comando desconocido '{}'. Comandos: estado, destinos, escanear, ir_a, girar, avanzar, parar, volcar_profundidad".format(cmd))
+            fail("Comando desconocido '{}'. Comandos: estado, destinos, escanear, ir_a, ir_a_punto, girar, avanzar, parar, volcar_profundidad".format(cmd))
     except (TypeError, ValueError) as error:
         fail("Argumentos invalidos para '{}': {}".format(cmd, error))
 
@@ -794,6 +814,24 @@ while robot.step(time_step) != -1:
         target_speed = 0.0
         target_omega = 0.0
         safety_block = "persona"
+
+    # Navegacion frenada por la seguridad (por ejemplo, no puede girar hacia el destino):
+    # se informa en segundos con la regla exacta, en vez de esperar al vigilante de progreso.
+    if not navigation_active or mode == MODE_WAIT_PERSON or person_detected:
+        nav_blocked_since = None  # esperar a una persona no es un bloqueo
+    else:
+        nav_blocked = (requested_speed != 0.0 and target_speed == 0.0) or (requested_omega != 0.0 and target_omega == 0.0)
+        if not nav_blocked:
+            nav_blocked_since = None
+        elif nav_blocked_since is None:
+            nav_blocked_since = now
+        elif now - nav_blocked_since > BLOQUEO_NAVEGACION_SEGUNDOS:
+            print("NAVEGACION BLOQUEADA POR SEGURIDAD ({}): STOP".format(safety_block))
+            finish_task("fallo", "bloqueado_por_seguridad", "La seguridad impide seguir hacia {} desde hace {:.0f} s ({}, modo {}) | {} | atras {:.2f}".format(
+                current_destination_name, now - nav_blocked_since, safety_block, mode, scan_text(scan), back_distance))
+            stop_navigation()
+            target_speed = 0.0
+            target_omega = 0.0
 
     # Una maniobra que la seguridad frena durante un rato falla con el motivo exacto.
     if maneuver is not None and mode != MODE_WAIT_PERSON:

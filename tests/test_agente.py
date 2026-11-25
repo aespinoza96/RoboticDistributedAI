@@ -80,7 +80,7 @@ class TestAgente(unittest.TestCase):
     def correr(self, guion, **opciones):
         cliente = ClienteFalso(guion)
         agente.anthropic.AsyncAnthropic = lambda: cliente
-        args = {"max_pasos": 10, "max_movimientos": 5, "minutos": 5, "esfuerzo": "high", **opciones}
+        args = {"max_pasos": 12, "max_movimientos": 5, "minutos": 5, "esfuerzo": "high", **opciones}
         mision = asyncio.run(agente.ejecutar("Vaya al punto de entrega 3", **args))
         return mision, cliente
 
@@ -130,6 +130,33 @@ class TestAgente(unittest.TestCase):
         self.assertIn("retroceder", mision.reporte["recomendacion"])
         self.assertEqual(mision.reporte["ultimo_resultado_del_robot"]["motivo"], "evasion_sin_salida")
         self.assertIn(("parar", {}), self.robot.ordenes)
+
+    def test_sin_progreso_detiene_tras_3_intentos(self):
+        guion = [[bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, n)] for n in range(6)]
+        mision, cliente = self.correr(guion, max_movimientos=30)
+        # 1er fallo fija la mejor distancia; 3 mas sin acercarse agotan el limite y el 5o se rechaza.
+        self.assertEqual(mision.movimientos, 4)
+        self.assertTrue(mision.sin_progreso())
+        self.assertIn("sin acercarse", cliente.runner.resultados[4][1])
+        self.assertEqual(mision.reporte["motivo"], "sin_progreso_hacia_el_destino")
+        self.assertIn(("parar", {}), self.robot.ordenes)
+
+    def test_progreso_permite_seguir(self):
+        guion = [
+            [bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, 1)],
+            [bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, 2)],
+            [bloque_herramienta("ir_a_punto", {"x": 1.0, "y": 4.5}, 3)],   # se acerca 2.4 m
+            [bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, 4)],
+            [bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, 5)],
+            [bloque_herramienta("ir_a_punto", {"x": -2.0, "y": 4.4}, 6)],  # se acerca 3 m mas
+            [bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, 7)],
+        ]
+        mision, cliente = self.correr(guion, max_movimientos=30)
+        self.assertEqual(mision.movimientos, 7)  # ninguno rechazado
+        self.assertFalse(mision.sin_progreso())
+        self.assertLess(mision.mejor_distancia, 2.0)
+        texto = agente.texto_de_resultado(cliente.runner.resultados[-1][1])
+        self.assertIn("Progreso: a", texto)
 
     def test_limite_de_movimientos(self):
         guion = [[bloque_herramienta("girar", {"grados": 10}, n)] for n in range(4)]
