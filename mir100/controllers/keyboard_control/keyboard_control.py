@@ -40,6 +40,7 @@ import lidar  # noqa: E402
 import profundidad  # noqa: E402
 import mapa as mapa_mod  # noqa: E402
 import planificador  # noqa: E402
+import personas  # noqa: E402
 
 # ===================================================
 # CONFIGURACION - AJUSTAR EN TU ESCENARIO
@@ -80,7 +81,14 @@ MAX_AVOID_ATTEMPTS = 8
 YOLO_MODEL = "yolo11n.pt"
 YOLO_CONFIDENCE = 0.55
 YOLO_EVERY_N_STEPS = 3
-PERSON_CLEAR_DETECTIONS = 5       # 5 inferencias seguidas sin persona antes de reanudar.
+PERSON_CLEAR_DETECTIONS = 5       # 5 inferencias seguidas sin persona bloqueando antes de reanudar.
+# Personas: pasar con cuidado. Frenar solo si esta DELANTE y cerca; si no, ir despacio y rodearla.
+PERSONA_PARADA_M = 0.60           # holgura frontal a la que se frena (persona en el camino)
+PERSONA_ANGULO_FRENTE = 35.0      # grados a cada lado que cuentan como "delante"
+PERSONA_LENTO_M = 2.0             # mas cerca que esto: velocidad reducida
+PERSONA_VELOCIDAD = 0.12          # m/s cerca de personas
+PERSONA_ZONA_RADIO = 1.0          # m: zona que la ruta evita (el seguimiento recorta ~0.05-0.1 m en curvas)
+PERSONA_MEMORIA_S = 3.0           # s que se recuerda una persona que dejo de verse
 LOG_EVERY_STEPS = 30
 
 # Camara de profundidad: obstaculos por encima del plano del LiDAR (mesas, cintas).
@@ -368,6 +376,10 @@ mode = MODE_GOAL
 saved_mode = MODE_GOAL
 person_detected = False
 person_confidence = 0.0
+people = []              # personas ubicadas en el marco del robot (personas.ubicar)
+person_blocking = False  # una persona delante y cerca: frena el avance
+person_near = False      # una persona cerca: velocidad reducida
+people_zones = []        # (x, y, t) en el mundo, para que el planificador las rodee
 person_clear_count = 0
 annotated_frame = None
 step_counter = 0
@@ -420,6 +432,7 @@ def robot_context():
         "lidar": {k: round(scan[k], 2) for k in ("left", "front_left", "front", "front_right", "right", "back")},
         "lidar_ok": scan["ok"],
         "persona_detectada": person_detected,
+        "personas": [{"holgura": round(p["holgura"], 2), "angulo": round(p["angulo"]), "fuente": p["fuente"]} for p in people],
         "obstaculos_altos": depth_hits,
         "mapa_conocido_m2": known_map_m2(),
     }
@@ -476,7 +489,7 @@ def start_navigation(name, target=None):
     current_destination_name = name
     navigation_active = True
     base_mode = MODE_PLAN if PLANIFICADOR_ACTIVO else MODE_GOAL
-    mode = MODE_WAIT_PERSON if person_detected else base_mode
+    mode = MODE_WAIT_PERSON if person_blocking and base_mode != MODE_PLAN else base_mode
     saved_mode = base_mode
     if PLANIFICADOR_ACTIVO:
         navigator.iniciar((float(current_destination[0]), float(current_destination[1])))
@@ -688,6 +701,8 @@ while robot.step(time_step) != -1:
             boxes = results[0].boxes if results else None
             person_detected = False
             person_confidence = 0.0
+            seen_before = bool(people)
+            people = []
             if boxes is not None:
                 for detected_box in boxes:
                     class_id = int(detected_box.cls[0])
@@ -695,8 +710,25 @@ while robot.step(time_step) != -1:
                     if class_id == 0:
                         person_detected = True
                         person_confidence = max(person_confidence, confidence)
+                        located = personas.ubicar(detected_box.xyxy[0].tolist(), camera_width, camera_height,
+                                                  camera.getFov(), depth_points_xy)
+                        located["confianza"] = confidence
+                        people.append(located)
+            person_blocking = any(p["holgura"] < PERSONA_PARADA_M and abs(p["angulo"]) <= PERSONA_ANGULO_FRENTE for p in people)
+            person_near = any(p["holgura"] < PERSONA_LENTO_M for p in people)
+            # Zonas para el planificador, en el mundo; se olvidan si no se ven por un rato.
+            pose_now = robot_pose(robot_node)
+            people_zones = [z for z in people_zones if robot.getTime() - z[2] < PERSONA_MEMORIA_S]
+            for p in people:
+                wx, wy = mapa_mod.robot_a_mundo(pose_now, p["x"], p["y"])
+                people_zones.append((wx, wy, robot.getTime()))
+            navigator.fijar_zonas([(x, y, PERSONA_ZONA_RADIO) for x, y, _ in people_zones[-6:]])
+            if people and not seen_before and task is not None:
+                nearest = min(people, key=lambda p: p["holgura"])
+                emit("persona_detectada", {"tarea_id": task["tarea_id"], "holgura": round(nearest["holgura"], 2),
+                                           "angulo": round(nearest["angulo"]), "detalle": "Persona a la vista: el robot va despacio y la rodea; solo frena si queda delante a menos de {} m.".format(PERSONA_PARADA_M)})
             annotated_frame = results[0].plot() if results else frame
-            if person_detected:
+            if person_blocking:
                 person_clear_count = 0
             else:
                 person_clear_count += 1
@@ -738,17 +770,21 @@ while robot.step(time_step) != -1:
     target_speed = manual_speed if not navigation_active and maneuver is None else 0.0
     target_omega = manual_omega if not navigation_active and maneuver is None else 0.0
 
-    # Persona: se conservan los datos de evasion, se frena y se reanuda despues.
-    if person_detected and mode != MODE_WAIT_PERSON:
+    # Persona DELANTE y cerca. Con ruta planificada no se espera: la persona es una zona a
+    # evitar, el planificador busca otra ruta y la seguridad solo frena el avance (puede girar).
+    # Sin planificador (navegacion reactiva) se espera a que se aparte.
+    if person_blocking and mode not in (MODE_WAIT_PERSON, MODE_PLAN):
         saved_mode = mode
         mode = MODE_WAIT_PERSON
         manual_speed = 0.0
         manual_omega = 0.0
         person_since = now
         person_warned = False
-        print("PERSONA DETECTADA (confianza {:.2f}): STOP".format(person_confidence))
+        blocker = min(people, key=lambda p: p["holgura"]) if people else {"holgura": 0.0, "angulo": 0.0}
+        print("PERSONA DELANTE a {:.2f} m (angulo {:.0f}): ESPERANDO".format(blocker["holgura"], blocker["angulo"]))
         if task is not None:
-            emit("persona_detectada", {"tarea_id": task["tarea_id"], "confianza": round(person_confidence, 2)})
+            emit("persona_en_el_camino", {"tarea_id": task["tarea_id"], "holgura": round(blocker["holgura"], 2),
+                                          "angulo": round(blocker["angulo"])})
 
     if mode == MODE_WAIT_PERSON:
         target_speed = 0.0
@@ -762,7 +798,7 @@ while robot.step(time_step) != -1:
             person_warned = True
             emit("persona_bloqueando", {"tarea_id": task["tarea_id"], "segundos": round(now - person_since, 1),
                                         "detalle": "Una persona frena la tarea; el robot sigue esperando. Se puede esperar mas o cancelar."})
-        if not person_detected and person_clear_count >= PERSON_CLEAR_DETECTIONS:
+        if not person_blocking and person_clear_count >= PERSON_CLEAR_DETECTIONS:
             mode = saved_mode
             if mode in (MODE_AVOID_TURN, MODE_AVOID_FOLLOW):
                 avoid_started = now
@@ -938,14 +974,18 @@ while robot.step(time_step) != -1:
     if target_speed < 0.0 and back_distance < SAFE_DISTANCE_BACK:
         target_speed = 0.0
         safety_block = "obstaculo_atras"
-    if mode == MODE_WAIT_PERSON or person_detected:
-        target_speed = 0.0
-        target_omega = 0.0
-        safety_block = "persona"
+    if mode == MODE_WAIT_PERSON or person_blocking:
+        if target_speed > 0.0:
+            target_speed = 0.0
+            safety_block = "persona_delante"
+        if mode == MODE_WAIT_PERSON:
+            target_omega = 0.0
+    elif person_near and target_speed > PERSONA_VELOCIDAD:
+        target_speed = PERSONA_VELOCIDAD  # pasar con cuidado
 
     # Navegacion frenada por la seguridad (por ejemplo, no puede girar hacia el destino):
     # se informa en segundos con la regla exacta, en vez de esperar al vigilante de progreso.
-    if not navigation_active or mode == MODE_WAIT_PERSON or person_detected:
+    if not navigation_active or mode == MODE_WAIT_PERSON or person_blocking:
         nav_blocked_since = None  # esperar a una persona no es un bloqueo
     else:
         nav_blocked = (requested_speed != 0.0 and target_speed == 0.0) or (requested_omega != 0.0 and target_omega == 0.0)

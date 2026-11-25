@@ -121,6 +121,16 @@ class Navegador:
         self.progreso = 0
         self.ultima_planificacion = -1e9
         self.replanificaciones = 0
+        self.zonas = []                # (x, y, radio): areas a evitar, p. ej. personas
+
+    def fijar_zonas(self, zonas, umbral=0.5):
+        """Zonas a evitar (x, y, radio). Replanifica si aparece una nueva o alguna se movio."""
+        def lejos(a, b):
+            return math.hypot(a[0] - b[0], a[1] - b[1]) > umbral
+        cambio = len(zonas) != len(self.zonas) or any(all(lejos(z, v) for v in self.zonas) for z in zonas)
+        self.zonas = list(zonas)
+        if cambio and self.activo:
+            self.replanificar_ya()
 
     def iniciar(self, meta):
         self.activo, self.meta = True, (float(meta[0]), float(meta[1]))
@@ -142,6 +152,11 @@ class Navegador:
             return None
         for inflado in (self.inflado, self.inflado_minimo):
             bloqueado = mapa_mod.dilatar(ocupado, inflado)
+            for zx, zy, radio in self.zonas:
+                zf, zc = self.mapa.celda(zx, zy)
+                for df, dc in mapa_mod.desplazamientos_disco(int(math.ceil(radio / self.mapa.resolucion))):
+                    if self.mapa.dentro(zf + df, zc + dc):
+                        bloqueado[zf + df, zc + dc] = True
             blando = mapa_mod.dilatar(ocupado, self.inflado_blando) & ~bloqueado
             # El robot puede estar pegado a un obstaculo: liberar su entorno (nunca lo ocupado).
             f0, f1 = max(0, inicio[0] - inflado), min(self.mapa.filas, inicio[0] + inflado + 1)

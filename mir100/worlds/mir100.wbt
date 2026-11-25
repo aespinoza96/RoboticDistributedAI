@@ -142,6 +142,10 @@ Mir100 {
   bodySlot [
     JetBotRaspberryPiCamera {
       translation 0.4 0 0
+      fieldOfView 1.5708
+      width 640
+      height 480
+      far 10
     }
     Robotino3Platform {
       extension [
