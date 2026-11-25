@@ -80,9 +80,21 @@ Runs one `robot.step()` loop. Each step:
    the raw image for calibration. Verified at the world's table: tabletop seen at
    0.67–0.69 m height where the LiDAR read 0.2–0.3 m farther.
 2. **YOLO + people** (every `YOLO_EVERY_N_STEPS`; camera 640×480, 90°, `far 10` in the
-   world, was 1 m): each person box is located by `personas.ubicar` (bearing from the box;
+   world, was 1 m). People come from a **dedicated detector** (`DETECTORES_PERSONAS`, first
+   file found): `yoloe_personas.pt` (YOLOE-26s with the class "person" fixed, threshold
+   0.15) else `yolo_personas.pt` (YOLO-World) else YOLO11n at 0.35. Built locally with
+   `construir_detector_personas.py` (not in git; downloads YOLOE weights + MobileCLIP once).
+   Measured on 39 Webots images of the pedestrian (front/profile/back, 1.3–3.8 m): YOLO11n
+   4/39, YOLO-World 14/39, YOLO26s 17/39, YOLOE-26s 23/39. Boxes must be taller than wide
+   (`PERSONA_PROPORCION_MIN`). YOLO11n still labels other objects in the window.
+   Each person box is located by `personas.ubicar` (bearing from the box;
    distance from depth points inside the box, else LiDAR points, else box height marked
    `tamano_aproximado`). Detection alone never stops the robot: the rule is **distance**.
+   - **People memory** (`remember_person` / `remembered_people`): detections are kept in
+     world coordinates for `PERSONA_RECUERDO_S` (10 s) and the stop is evaluated **every
+     step** against them. Up close the camera only sees legs and, when passing beside, the
+     person leaves the frame: without memory the robot "forgot" them and drove past.
+     Size-only estimates count only while visible.
    - **Priority stop:** a person at `PERSONA_PARADA_M` (1.0 m) clearance or less, or
      `PERSONA_PARADA_FRENTE_M` (1.5 m) when ahead (±35°, `person_stop_distance`), stops the
      robot. The frontal margin exists because the LiDAR puts the person's legs in the map
@@ -154,7 +166,8 @@ and no other thread touches Webots.
   current map, no motion), `ir_a(destino)`, `ir_a_punto(x, y)`
   (waypoint in world coordinates, same navigation as `ir_a`, |x|,|y| ≤ 50),
   `girar(grados)` (+ = left, max 180), `avanzar(metros)` (negative = reverse, max 1.0),
-  `parar`, `volcar_profundidad(ruta)`, `volcar_mapa(ruta.npz)`. Movement commands return a `tarea_id`
+  `parar`, `volcar_profundidad(ruta)`, `volcar_mapa(ruta.npz)`, `volcar_camara(ruta.png, cruda)`
+  (camera frame + YOLO11n detections at 0.10, for diagnosis). Movement commands return a `tarea_id`
   immediately; the result arrives as an event.
 - **Per-order options** on `ir_a`, `ir_a_punto`, `girar`, `avanzar` (`parse_task_options`):
   `velocidad` (0.05–0.40 m/s, plan speed), `al_ver_persona` = `continuar` (default) | `rodear` |

@@ -81,6 +81,14 @@ MAX_AVOID_ATTEMPTS = 8
 
 YOLO_MODEL = "yolo11n.pt"
 YOLO_CONFIDENCE = 0.55
+# Personas: detector dedicado (construir_detector_personas.py). Medido sobre 39 imagenes del
+# peaton de Webots (frente, perfil y espalda, 1.3-3.8 m): YOLO11n 4/39, YOLO-World 14/39,
+# YOLO26s 17/39, YOLOE-26s "person" 23/39 con umbral 0.15. De cerca la camara solo ve piernas
+# y ninguno detecta bien: eso lo cubre la memoria de personas (remembered_people).
+# Se usa el primero que exista; si no hay ninguno, YOLO11n con umbral bajo.
+DETECTORES_PERSONAS = (("yoloe_personas.pt", 0.15), ("yolo_personas.pt", 0.25))
+YOLO_CONFIANZA_PERSONA_YOLO11 = 0.35
+PERSONA_PROPORCION_MIN = 1.3
 YOLO_EVERY_N_STEPS = 3
 PERSON_CLEAR_DETECTIONS = 5       # 5 inferencias seguidas sin persona bloqueando antes de reanudar.
 # Personas: pasar con cuidado. Frenar solo si esta DELANTE y cerca; si no, ir despacio y rodearla.
@@ -94,7 +102,9 @@ PERSONA_ANGULO_FRENTE = 35.0      # grados a cada lado que cuentan como "delante
 PERSONA_LENTO_M = 2.0             # mas cerca que esto: velocidad reducida
 PERSONA_VELOCIDAD = 0.12          # m/s cerca de personas
 PERSONA_ZONA_RADIO = 1.0          # m: zona que la ruta evita (el seguimiento recorta ~0.05-0.1 m en curvas)
-PERSONA_MEMORIA_S = 3.0           # s que se recuerda una persona que dejo de verse
+PERSONA_MEMORIA_S = 3.0           # s que una zona de "rodear" sigue tras dejar de verse
+PERSONA_RECUERDO_S = 10.0         # s que una persona cuenta para la PARADA aunque ya no este en camara
+PERSONA_FUSION_M = 0.8            # detecciones a menos de esto son la misma persona
 # Opciones por orden (ir_a, ir_a_punto, girar, avanzar): ver parse_task_options.
 OPCIONES_AL_VER_PERSONA = ("continuar", "rodear", "detenerse", "esperar")   # defecto: continuar
 DISTANCIA_PERSONA_DEFECTO = 3.0   # m de holgura para "detenerse" / "esperar"
@@ -369,6 +379,17 @@ camera_height = camera.getHeight()
 keyboard = Keyboard()
 keyboard.enable(time_step)
 model = YOLO(YOLO_MODEL)
+person_model = None
+YOLO_CONFIANZA_PERSONA = YOLO_CONFIANZA_PERSONA_YOLO11
+for detector_file, detector_threshold in DETECTORES_PERSONAS:
+    if os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(__file__)), detector_file)):
+        person_model = YOLO(detector_file)
+        YOLO_CONFIANZA_PERSONA = detector_threshold
+        print("DETECTOR DE PERSONAS: {} (umbral {})".format(detector_file, detector_threshold))
+        break
+else:
+    print("ADVERTENCIA: no hay detector de personas (ver construir_detector_personas.py); se usa {} con umbral {}".format(
+        YOLO_MODEL, YOLO_CONFIANZA_PERSONA_YOLO11))
 
 destination_nodes = {}
 for key, destination_def in DESTINATIONS.items():
@@ -394,6 +415,7 @@ person_close_latched = False  # ya se aviso de la persona cercana actual (evita 
 person_pause_until = None     # fin de la espera de PERSONA_ESPERA_S (tiempo de simulacion), o None
 lidar_points_xy = None
 people_zones = []        # (x, y, t) en el mundo, para que el planificador las rodee
+people_memory = []       # personas recordadas: dicts con x_mundo, y_mundo, t, fuente (ver remember_person)
 person_clear_count = 0
 annotated_frame = None
 step_counter = 0
@@ -493,6 +515,32 @@ def stop_navigation():
     mode = MODE_GOAL
     manual_speed = 0.0
     manual_omega = 0.0
+
+
+def remember_person(person):
+    """Guarda o actualiza una persona detectada (posicion en el mundo)."""
+    now_t = robot.getTime()
+    for known in people_memory:
+        if math.hypot(known["x_mundo"] - person["x_mundo"], known["y_mundo"] - person["y_mundo"]) < PERSONA_FUSION_M:
+            known.update({"x_mundo": person["x_mundo"], "y_mundo": person["y_mundo"], "t": now_t, "fuente": person["fuente"]})
+            return
+    people_memory.append({"x_mundo": person["x_mundo"], "y_mundo": person["y_mundo"], "t": now_t, "fuente": person["fuente"]})
+
+
+def remembered_people():
+    """Personas vistas en los ultimos PERSONA_RECUERDO_S, con holgura y angulo desde la pose actual."""
+    now_t = robot.getTime()
+    people_memory[:] = [k for k in people_memory if now_t - k["t"] <= PERSONA_RECUERDO_S]
+    x, y, yaw = robot_pose(robot_node)
+    c, s_ = math.cos(yaw), math.sin(yaw)
+    result = []
+    for k in people_memory:
+        dx, dy = k["x_mundo"] - x, k["y_mundo"] - y
+        rx, ry = c * dx + s_ * dy, -s_ * dx + c * dy
+        clearance = math.hypot(max(abs(rx) - lidar.MEDIO_LARGO, 0.0), max(abs(ry) - lidar.MEDIO_ANCHO, 0.0))
+        result.append(dict(k, holgura=clearance, angulo=math.degrees(math.atan2(ry, rx)),
+                           visto_hace=round(now_t - k["t"], 1)))
+    return result
 
 
 def person_stop_distance(person):
@@ -606,6 +654,23 @@ def handle_command(client, message):
                 "nota": "Holgura en metros desde el borde del robot; 0.0 = sin lecturas validas (se trata como bloqueado). "
                         "Combina LiDAR (plano a 0.19 m) y camara de profundidad (al frente, hasta 1.95 m); "
                         "obstaculos_altos = sectores donde la profundidad vio algo mas cerca que el LiDAR (p. ej. una mesa)."})
+        elif cmd == "volcar_camara":
+            # Diagnostico: guarda la imagen de la camara y lo que YOLO detecta en ella.
+            path = str(args.get("ruta", ""))
+            if not path.endswith(".png"):
+                fail("'ruta' debe terminar en .png")
+                return
+            raw = camera.getImage()
+            if not raw:
+                fail("La camara no tiene imagen")
+                return
+            img = cv2.cvtColor(np.frombuffer(raw, dtype=np.uint8).reshape((camera_height, camera_width, 4)), cv2.COLOR_BGRA2BGR)
+            res = model.predict(img, conf=0.10, verbose=False)
+            found = [{"clase": res[0].names[int(b.cls[0])], "confianza": round(float(b.conf[0]), 2),
+                      "caja": [round(v) for v in b.xyxy[0].tolist()]} for b in res[0].boxes] if res else []
+            cv2.imwrite(path, img if args.get("cruda") else (res[0].plot() if res else img))
+            ok({"ruta": path, "tamano": [camera_width, camera_height], "detecciones": found,
+                "personas_en_uso": [{"holgura": round(p["holgura"], 2), "fuente": p["fuente"]} for p in people]})
         elif cmd == "volcar_mapa":
             # Diagnostico: guarda las capas del mapa (.npz) para ver que bloquea las rutas.
             path = str(args.get("ruta", ""))
@@ -751,28 +816,38 @@ while robot.step(time_step) != -1:
         frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
         if step_counter % YOLO_EVERY_N_STEPS == 0:
             try:
-                results = model.predict(frame, conf=YOLO_CONFIDENCE, verbose=False)
+                person_threshold = YOLO_CONFIANZA_PERSONA if person_model is not None else YOLO_CONFIANZA_PERSONA_YOLO11
+                results = model.predict(frame, conf=YOLO_CONFIDENCE if person_model is not None else person_threshold, verbose=False)
                 boxes = results[0].boxes if results else None
+                if person_model is not None:
+                    person_results = person_model.predict(frame, conf=person_threshold, verbose=False)
+                    candidate_boxes = list(person_results[0].boxes) if person_results else []
+                else:
+                    candidate_boxes = [b for b in (boxes or []) if int(b.cls[0]) == 0]
+                # Una persona de pie es mas alta que ancha: descarta recuadros chatos (falsos positivos).
+                person_boxes = []
+                for b in candidate_boxes:
+                    x1, y1, x2, y2 = b.xyxy[0].tolist()
+                    if (y2 - y1) >= PERSONA_PROPORCION_MIN * max(1.0, x2 - x1):
+                        person_boxes.append(b)
                 person_detected = False
                 person_confidence = 0.0
                 seen_before = bool(people)
                 people = []
                 lidar_points_xy = None
-                if boxes is not None:
-                    for detected_box in boxes:
-                        class_id = int(detected_box.cls[0])
+                if person_boxes:
+                    for detected_box in person_boxes:
                         confidence = float(detected_box.conf[0])
-                        if class_id == 0:
-                            person_detected = True
-                            person_confidence = max(person_confidence, confidence)
-                            if lidar_points_xy is None:
-                                lidar_points_xy = lidar.puntos_xy(front_lidar.getLayerRangeImage(0), back_lidar.getLayerRangeImage(0),
-                                                                  front_lidar.getMaxRange(), back_lidar.getMaxRange(),
-                                                                  math.degrees(front_lidar.getFov()))
-                            located = personas.ubicar(detected_box.xyxy[0].tolist(), camera_width, camera_height,
-                                                      camera.getFov(), depth_points_xy, lidar_points_xy)
-                            located["confianza"] = confidence
-                            people.append(located)
+                        person_detected = True
+                        person_confidence = max(person_confidence, confidence)
+                        if lidar_points_xy is None:
+                            lidar_points_xy = lidar.puntos_xy(front_lidar.getLayerRangeImage(0), back_lidar.getLayerRangeImage(0),
+                                                              front_lidar.getMaxRange(), back_lidar.getMaxRange(),
+                                                              math.degrees(front_lidar.getFov()))
+                        located = personas.ubicar(detected_box.xyxy[0].tolist(), camera_width, camera_height,
+                                                  camera.getFov(), depth_points_xy, lidar_points_xy)
+                        located["confianza"] = confidence
+                        people.append(located)
                 # "esperar": cualquier persona delante dentro de distancia_persona detiene el avance.
                 wait_for_people = task is not None and task_options.get("al_ver_persona") == "esperar"
                 stop_distance = task_options.get("distancia_persona", PERSONA_PARADA_FRENTE_M) if wait_for_people else PERSONA_PARADA_FRENTE_M
@@ -785,34 +860,10 @@ while robot.step(time_step) != -1:
                     wx, wy = mapa_mod.robot_a_mundo(pose_now, p["x"], p["y"])
                     p["x_mundo"], p["y_mundo"] = wx, wy
                     people_zones.append((wx, wy, robot.getTime()))
-                # PRIORIDAD YOLO: persona a PERSONA_PARADA_M o menos = detenerse y avisar, sea cual sea
-                # la orden (tambien sin tarea). Se avisa una vez por encuentro; despues la seguridad sigue
-                # impidiendo avanzar hacia ella, pero el agente puede girar o retroceder.
-                close = [p for p in people if p["holgura"] <= person_stop_distance(p)]
-                if close and not person_close_latched:
-                    person_close_latched = True
-                    nearest = min(close, key=lambda p: p["holgura"])
-                    manual_speed = 0.0
-                    manual_omega = 0.0
-                    moving_task = task is not None and (navigation_active or maneuver is not None)
-                    if moving_task:
-                        # Se detiene y ESPERA: al terminar la espera retoma la tarea (ver bloque WAIT_PERSON).
-                        person_pause_until = robot.getTime() + PERSONA_ESPERA_S
-                        if mode != MODE_WAIT_PERSON:
-                            saved_mode = mode
-                            mode = MODE_WAIT_PERSON
-                        person_since = robot.getTime()
-                        person_warned = True
-                    detail = "Persona a {:.2f} m (angulo {:.0f}, en ({:.2f}, {:.2f}) [{}]): el robot se detuvo{}".format(
-                        nearest["holgura"], nearest["angulo"], nearest["x_mundo"], nearest["y_mundo"], nearest["fuente"],
-                        " y espera {:.0f} s antes de retomar la tarea".format(PERSONA_ESPERA_S) if moving_task else "")
-                    print("PERSONA CERCA: " + detail)
-                    emit("persona_cerca", {"tarea_id": task["tarea_id"] if task else None, "holgura": round(nearest["holgura"], 2),
-                                           "angulo": round(nearest["angulo"]), "fuente": nearest["fuente"],
-                                           "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)],
-                                           "espera_s": PERSONA_ESPERA_S if moving_task else 0, "detalle": detail})
-                elif not any(p["holgura"] <= person_stop_distance(p) + PERSONA_REARME_M - PERSONA_PARADA_M for p in people):
-                    person_close_latched = False
+                # Memoria de personas en el mundo: siguen contando aunque salgan de la camara
+                # (al pasar a su lado ya no se ven, y ahi es cuando mas cerca estan).
+                for p in people:
+                    remember_person(p)
                 # "detenerse": la orden termina en cuanto se ve una persona dentro de distancia_persona.
                 if task is not None and task_options.get("al_ver_persona") == "detenerse":
                     seen = [p for p in people if p["holgura"] <= task_options.get("distancia_persona", DISTANCIA_PERSONA_DEFECTO)]
@@ -834,12 +885,12 @@ while robot.step(time_step) != -1:
                                                "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)],
                                                "al_ver_persona": task_options.get("al_ver_persona", "continuar")})
                 annotated_frame = results[0].plot() if results else frame
-                # Distancia que mide el robot a cada persona, sobre la ventana de YOLO.
-                if boxes is not None and people:
-                    person_boxes = [b for b in boxes if int(b.cls[0]) == 0]
+                # Personas detectadas y la distancia que mide el robot, sobre la ventana de YOLO.
+                if people:
                     for b, p in zip(person_boxes, people):
-                        x1, y1 = [int(v) for v in b.xyxy[0].tolist()[:2]]
+                        x1, y1, x2, y2 = [int(v) for v in b.xyxy[0].tolist()]
                         stops = person_stop_distance(p) >= p["holgura"]
+                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255) if stops else (0, 200, 0), 2)
                         cv2.putText(annotated_frame, "{:.2f} m [{}]{}".format(p["holgura"], p["fuente"], " STOP" if stops else ""),
                                     (x1, max(15, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
                                     (0, 0, 255) if stops else (0, 200, 0), 2, cv2.LINE_AA)
@@ -878,6 +929,38 @@ while robot.step(time_step) != -1:
         elif key == Keyboard.RIGHT:
             manual_omega = max(-ANGULAR_SPEED_MAX, manual_omega - ANGULAR_SPEED_INCREMENT)
 
+    # PRIORIDAD (cada paso, con las personas RECORDADAS): persona a PERSONA_PARADA_M o menos = detenerse y avisar, sea cual sea
+    # la orden (tambien sin tarea). Se avisa una vez por encuentro; despues la seguridad sigue
+    # impidiendo avanzar hacia ella, pero el agente puede girar o retroceder.
+    tracked = remembered_people()
+    # Una posicion estimada solo por el tamano del recuadro es poco fiable: cuenta solo mientras se ve.
+    close = [p for p in tracked if p["holgura"] <= person_stop_distance(p)
+             and (p["fuente"] != "tamano_aproximado" or p["visto_hace"] <= 0.5)]
+    if close and not person_close_latched:
+        person_close_latched = True
+        nearest = min(close, key=lambda p: p["holgura"])
+        manual_speed = 0.0
+        manual_omega = 0.0
+        moving_task = task is not None and (navigation_active or maneuver is not None)
+        if moving_task:
+            # Se detiene y ESPERA: al terminar la espera retoma la tarea (ver bloque WAIT_PERSON).
+            person_pause_until = robot.getTime() + PERSONA_ESPERA_S
+            if mode != MODE_WAIT_PERSON:
+                saved_mode = mode
+                mode = MODE_WAIT_PERSON
+            person_since = robot.getTime()
+            person_warned = True
+        detail = "Persona a {:.2f} m (angulo {:.0f}, en ({:.2f}, {:.2f}) [{}]): el robot se detuvo{}".format(
+            nearest["holgura"], nearest["angulo"], nearest["x_mundo"], nearest["y_mundo"], nearest["fuente"],
+            " y espera {:.0f} s antes de retomar la tarea".format(PERSONA_ESPERA_S) if moving_task else "")
+        print("PERSONA CERCA: " + detail)
+        emit("persona_cerca", {"tarea_id": task["tarea_id"] if task else None, "holgura": round(nearest["holgura"], 2),
+                               "angulo": round(nearest["angulo"]), "fuente": nearest["fuente"],
+                               "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)],
+                               "espera_s": PERSONA_ESPERA_S if moving_task else 0, "detalle": detail})
+    elif not any(p["holgura"] <= person_stop_distance(p) + PERSONA_REARME_M - PERSONA_PARADA_M for p in tracked):
+        person_close_latched = False
+
     # Ordenes del puente (agente / MCP). Se procesan aqui, en el hilo de Webots.
     if bridge is not None:
         for client, message in bridge.poll():
@@ -915,7 +998,7 @@ while robot.step(time_step) != -1:
             # Espera por persona cercana (PERSONA_ESPERA_S): no se mueve aunque la persona se aparte.
             if now >= person_pause_until:
                 person_pause_until = None
-                still_close = [p for p in people if p["holgura"] <= person_stop_distance(p)]
+                still_close = [p for p in remembered_people() if p["holgura"] <= person_stop_distance(p)]
                 if still_close and task is not None:
                     nearest = min(still_close, key=lambda p: p["holgura"])
                     finish_task("detenida", "persona_sigue_cerca", "Tras esperar {:.0f} s la persona sigue a {:.2f} m (en ({:.2f}, {:.2f})): el robot queda detenido".format(
