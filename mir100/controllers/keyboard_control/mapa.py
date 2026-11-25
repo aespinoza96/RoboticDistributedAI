@@ -21,6 +21,8 @@ X_MIN, Y_MIN = -10.0, -7.0        # arena de 19 x 13 m centrada en el origen, co
 ANCHO, ALTO = 20.0, 14.0
 RESOLUCION = 0.1                  # m por celda
 MAX_RANGO_LIBRE = 6.0             # hasta donde un rayo limpia espacio libre
+MAX_RANGO_IMPACTO = 4.0           # impactos mas lejanos no marcan ocupado: de lejos los rayos son
+                                  # escasos y sus puntos sueltos, inflados, cerraban pasillos que existen
 
 LOG_ODDS_IMPACTO = 0.85
 LOG_ODDS_LIBRE = -0.4
@@ -94,8 +96,9 @@ class Mapa:
         sin_eco = np.isposinf(r)
         usar = sin_eco | (np.isfinite(r) & (r > lidar.RANGO_MINIMO_VALIDO))
         r, angulos, sin_eco = r[usar], angulos[usar], sin_eco[usar]
-        impacto = ~sin_eco & (r < rango_maximo * 0.999)
-        largo_libre = np.minimum(np.where(impacto, r, MAX_RANGO_LIBRE), MAX_RANGO_LIBRE)
+        eco = ~sin_eco & (r < rango_maximo * 0.999)
+        largo_libre = np.minimum(np.where(eco, r, MAX_RANGO_LIBRE), MAX_RANGO_LIBRE)
+        impacto = eco & (r <= MAX_RANGO_IMPACTO)
 
         ox, oy = robot_a_mundo(pose, *posicion_sensor)
         direccion = pose[2] + angulos

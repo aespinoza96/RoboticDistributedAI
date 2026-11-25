@@ -22,7 +22,8 @@ mir100/                                  Webots project root (open this in Webot
 │   │   ├── lidar.py                     LiDAR sectors by real ray angle (pure numpy)
 │   │   ├── profundidad.py               Depth camera → 3D obstacles above the LiDAR plane
 │   │   ├── mapa.py                      Occupancy map (LiDAR layer + depth 'alto' layer)
-│   │   ├── planificador.py              A* route + pure pursuit (Navegador)
+│   │   ├── planificador.py              A* route + pure pursuit (Navegador), keep-out zones
+│   │   ├── personas.py                  Locate YOLO people (bearing + depth distance)
 │   │   └── yolo11n.pt                   YOLO11 nano weights (COCO), loaded by name
 │   ├── keyboard_matlab/keyboard_matlab.m  Leftover stock Webots MATLAB keyboard teleop (unused)
 │   └── Makefile                         Stock Webots Makefile (not needed for Python)
@@ -78,9 +79,15 @@ Runs one `robot.step()` loop. Each step:
    `MIR_PROFUNDIDAD=0` turns it off for A/B runs; `volcar_profundidad(ruta=.npy)` dumps
    the raw image for calibration. Verified at the world's table: tabletop seen at
    0.67–0.69 m height where the LiDAR read 0.2–0.3 m farther.
-2. **YOLO** (every `YOLO_EVERY_N_STEPS`): any COCO class 0 (person) above
-   `YOLO_CONFIDENCE` puts the robot in `WAIT_PERSON` (full stop). It resumes after
-   `PERSON_CLEAR_DETECTIONS` clean inferences. Shows an OpenCV window with detections.
+2. **YOLO + people** (every `YOLO_EVERY_N_STEPS`; camera 640×480, 90°, `far 10` in the
+   world, was 1 m): each person box is located by `personas.ubicar` (bearing from the box,
+   distance from depth points inside the box, else from box height). The robot **passes
+   carefully**: under `PERSONA_LENTO_M` (2 m) speed is capped at `PERSONA_VELOCIDAD`;
+   people become keep-out zones (`PERSONA_ZONA_RADIO` 1.0 m, remembered
+   `PERSONA_MEMORIA_S`) that the planner routes around; forward motion stops only if a
+   person is **ahead** (±`PERSONA_ANGULO_FRENTE`) within `PERSONA_PARADA_M` (0.6 m) —
+   turning stays allowed so the planner can swing around. Only reactive (non-planned)
+   navigation enters `WAIT_PERSON`. Shows an OpenCV window with detections.
 3. **Keyboard**: `1/2/3` start a route to ENTREGA_1/2/3, `0`/space cancel, arrows give
    manual control (only when not navigating).
 4. **State machine** (`mode`):
@@ -112,7 +119,10 @@ path with pure pursuit. In plan mode the final safety layer uses collision margi
 forward is blocked, and forces a replan. New outcomes: `sin_ruta` (no free path on the
 map) and `meta_inalcanzable` (goal inside an obstacle; reached the closest free cell).
 Verified once in Webots: ENTREGA_1 reached from the start (around the 8 m conveyor).
-Known: ENTREGA_3 from ENTREGA_1 returned `sin_ruta` — not investigated yet.
+LiDAR hits beyond `MAX_RANGO_IMPACTO` (4 m) only clear free space: sparse far hits,
+inflated, used to join into walls that closed real corridors (false `sin_ruta`). The
+planner retries with `INFLADO_MINIMO` (0.38 m) before reporting `sin_ruta`.
+`volcar_mapa` dumps the layers for diagnosis.
 
 ### Tasks and the command bridge
 
@@ -127,14 +137,16 @@ and no other thread touches Webots.
 
 - Request `{"id": 1, "cmd": "ir_a", "args": {"destino": "ENTREGA_3"}}` →
   `{"tipo": "respuesta", "id": 1, "ok": true, "resultado": {...}}` (or `ok: false`, `error`).
-- Commands: `estado`, `destinos`, `escanear`, `ir_a(destino)`, `ir_a_punto(x, y)`
+- Commands: `estado`, `destinos`, `escanear`, `ruta(destino | x, y)` (A* route length on the
+  current map, no motion), `ir_a(destino)`, `ir_a_punto(x, y)`
   (waypoint in world coordinates, same navigation as `ir_a`, |x|,|y| ≤ 50),
   `girar(grados)` (+ = left, max 180), `avanzar(metros)` (negative = reverse, max 1.0),
-  `parar`, `volcar_profundidad(ruta)`. Movement commands return a `tarea_id`
+  `parar`, `volcar_profundidad(ruta)`, `volcar_mapa(ruta.npz)`. Movement commands return a `tarea_id`
   immediately; the result arrives as an event.
 - Events `{"tipo": "evento", "evento": ..., "t": sim_seconds, "datos": {...}}` go to all
   clients: `tarea_iniciada`, `tarea_terminada`, `evasion_iniciada`, `evasion_terminada`,
-  `persona_detectada`, `persona_despejada`, `persona_bloqueando` (warning only, after
+  `persona_detectada` (first sighting, with clearance/angle), `persona_en_el_camino`,
+  `persona_despejada`, `persona_bloqueando` (warning only, after
   `PERSONA_BLOQUEANDO_SEGUNDOS`), `lidar_sin_datos`.
 - Failure reasons (`motivo`): `sin_espacio_lateral`, `limite_evasiones`,
   `evasion_sin_salida` (`AVOID_MAX_SECONDS`, 25 s), `bloqueado_por_seguridad` (the
@@ -148,7 +160,7 @@ and no other thread touches Webots.
 
 ### MCP server (`agente/servidor_mcp.py`)
 
-Tools: `estado_robot`, `listar_destinos`, `escanear_entorno`, `ir_a`, `ir_a_punto`,
+Tools: `estado_robot`, `listar_destinos`, `escanear_entorno`, `distancia_por_ruta`, `ir_a`, `ir_a_punto`,
 `girar`, `avanzar`, `parar`, `esperar_tarea`. Movement tools wait (default) until the task ends
 and return `estado`, `motivo`, `detalle`, `contexto`, the event timeline and a
 `sugerencia` from `herramientas.SUGERENCIAS`. Each tool call opens its own bridge
@@ -165,11 +177,15 @@ and runs the Anthropic SDK tool runner (`claude-opus-5-5`, adaptive thinking, ef
 acts, recovers and must finish by calling the local `reportar_resultado` tool.
 
 Hard limits enforced in code, not by the prompt:
-- **Progress, not count:** the program measures the distance from each movement result's
-  `contexto.posicion` to the current `ir_a` goal (positions from `listar_destinos`).
-  Getting `MEJORA_MINIMA_M` (0.3 m) closer than the best so far resets the counter; each
-  failed navigation (`ir_a`, `ir_a_punto`, `esperar_tarea`) without that is one strike.
-  At `--max-sin-progreso` (3) strikes, movement tools are refused. Every movement result
+- **Progress, not count:** after each movement result the program asks the robot for the
+  **A\* route length** to the current `ir_a` goal (`distancia_por_ruta`; straight line
+  if unavailable) and the known map area. Shortening the route by `MEJORA_MINIMA_M`
+  (0.3 m) **or** discovering `DESCUBRIMIENTO_MINIMO_M2` (2 m²) of new map resets the
+  counter (discovery also resets the baseline, since new walls lengthen routes). A detour
+  that moves away in a straight line but shortens the route is progress. Each failed
+  navigation (`ir_a`, `ir_a_punto`, `esperar_tarea`) with neither is one strike;
+  `sin_ruta` never counts (it doesn't move; the prompt says to explore). At
+  `--max-sin-progreso` (3) strikes, movement tools are refused. Every movement result
   gets a "Progreso: ..." line appended so the model sees its budget.
 - Cost guards: `--max-movimientos` (30), `--max-pasos` (60 model turns), `--minutos` (15).
 The prompt tells the model to plan detours with `ir_a_punto` around `obstaculos_altos`

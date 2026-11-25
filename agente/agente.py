@@ -31,7 +31,8 @@ RAIZ = os.path.dirname(DIRECTORIO)
 MODELO = "claude-opus-5-5"
 HERRAMIENTAS_DE_MOVIMIENTO = {"ir_a", "ir_a_punto", "girar", "avanzar"}
 HERRAMIENTAS_DE_NAVEGACION = {"ir_a", "ir_a_punto", "esperar_tarea"}
-MEJORA_MINIMA_M = 0.3  # acercarse al menos esto al destino cuenta como progreso
+MEJORA_MINIMA_M = 0.3  # acortar al menos esto la ruta al destino cuenta como progreso
+DESCUBRIMIENTO_MINIMO_M2 = 2.0  # descubrir al menos este mapa nuevo tambien cuenta
 
 SISTEMA = """\
 Eres el agente de mision de un robot movil MiR100 en una fabrica simulada (Webots).
@@ -55,9 +56,14 @@ Como trabajar (decide rapido: una herramienta por paso, sin consultas redundante
 Limites:
 - La capa de seguridad del robot siempre tiene la ultima palabra. Si una maniobra queda
   bloqueada por seguridad, no insistas en la misma direccion.
-- Mientras te acerques al destino puedes seguir intentando. Cada resultado trae una
-  linea de "Progreso": si llegas al limite de intentos sin acercarte, deten el robot
-  con parar y reporta el fallo con lo que aprendiste del entorno.
+- El robot arma un mapa mientras se mueve e ir_a planifica la ruta sobre el. Mientras
+  la RUTA que falta se acorte o el robot descubra mapa nuevo, sigue: alejarse en linea
+  recta para rodear un obstaculo esta bien. Cada resultado trae una linea de "Progreso"
+  (ruta restante, mapa conocido, intentos sin avance); usa distancia_por_ruta para
+  comparar opciones. Si no hay ruta (sin_ruta), no es un fracaso: explora con ir_a_punto
+  hacia zonas que el robot aun no vio (a 2-4 m, hacia el lado libre) y vuelve a probar.
+  Solo al llegar al limite de intentos sin avance, deten el robot con parar y reporta el
+  fallo con lo que aprendiste del entorno.
 - Si una persona bloquea el camino, espera (esperar_tarea) en lugar de esquivarla a la
   fuerza; si sigue bloqueando mucho tiempo, reportalo.
 - Si un operador cancelo la tarea desde el teclado, no la reanudes: reporta.
@@ -98,6 +104,7 @@ class Mision:
         self.objetivo = None          # destino del ultimo ir_a
         self.mejor_distancia = None
         self.intentos_sin_progreso = 0
+        self.ultimo_conocido = None
         self.limite = time.monotonic() + limite_segundos
         self.limite_segundos = limite_segundos
         self.inicio = time.monotonic()
@@ -106,28 +113,59 @@ class Mision:
         self.bitacora = []
         self.ultimo_resultado_robot = None
 
-    def actualizar_progreso(self, herramienta, datos):
-        """Devuelve una linea de progreso para el modelo, o None si no aplica."""
-        if herramienta == "ir_a" and isinstance(datos.get("args"), dict) and datos["args"].get("destino") in self.destinos:
-            if datos["args"]["destino"] != self.objetivo:
-                self.objetivo = datos["args"]["destino"]
-                self.mejor_distancia, self.intentos_sin_progreso = None, 0
+    def fijar_objetivo(self, herramienta, datos):
+        """El destino del ultimo ir_a es el objetivo de la mision."""
+        destino = (datos.get("args") or {}).get("destino") if herramienta == "ir_a" else None
+        if destino in self.destinos and destino != self.objetivo:
+            self.objetivo = destino
+            self.mejor_distancia, self.intentos_sin_progreso, self.ultimo_conocido = None, 0, None
+
+    def actualizar_progreso(self, herramienta, datos, ruta=None):
+        """Devuelve una linea de progreso para el modelo, o None si no aplica.
+
+        ruta = respuesta de distancia_por_ruta (metros por ruta sobre el mapa y m2 conocidos).
+        Progreso = la RUTA que falta se acorta (rodear un obstaculo puede alejar en linea
+        recta y aun asi acercar por ruta) o el robot descubrio mapa nuevo (aprender por
+        donde no se puede pasar tambien sirve). Sin datos de ruta, se usa la linea recta.
+        Un sin_ruta no cuenta como intento: no mueve el robot y la salida es explorar.
+        """
+        self.fijar_objetivo(herramienta, datos)
         posicion = (datos.get("contexto") or {}).get("posicion")
         if self.objetivo is None or not posicion:
             return None
         gx, gy = self.destinos[self.objetivo]
-        distancia = ((posicion[0] - gx) ** 2 + (posicion[1] - gy) ** 2) ** 0.5
+        recta = ((posicion[0] - gx) ** 2 + (posicion[1] - gy) ** 2) ** 0.5
+        ruta = ruta if isinstance(ruta, dict) and "error" not in ruta else {}
+        por_ruta = ruta.get("metros_por_ruta")
+        distancia = por_ruta if por_ruta is not None else recta
+        conocido = ruta.get("mapa_conocido_m2")
+        descubierto = 0.0
+        if conocido is not None:
+            descubierto = 0.0 if self.ultimo_conocido is None else conocido - self.ultimo_conocido
+            self.ultimo_conocido = conocido
+
         if datos.get("motivo") == "llego" and herramienta == "ir_a":
             self.intentos_sin_progreso = 0
+        elif descubierto >= DESCUBRIMIENTO_MINIMO_M2:
+            # Mapa nuevo: las rutas pueden alargarse al descubrir paredes; nueva referencia.
+            self.intentos_sin_progreso = 0
+            self.mejor_distancia = distancia
         elif self.mejor_distancia is None or distancia < self.mejor_distancia - MEJORA_MINIMA_M:
             self.intentos_sin_progreso = 0
-        elif herramienta in HERRAMIENTAS_DE_NAVEGACION and datos.get("estado") != "exito":
+        elif herramienta in HERRAMIENTAS_DE_NAVEGACION and datos.get("estado") != "exito" and datos.get("motivo") != "sin_ruta":
             self.intentos_sin_progreso += 1
         if self.mejor_distancia is None or distancia < self.mejor_distancia:
             self.mejor_distancia = distancia
-        return "Progreso: a {:.2f} m de {} (mejor {:.2f} m). Intentos de navegacion sin acercarse: {}/{}. Movimientos: {}/{}.".format(
-            distancia, self.objetivo, self.mejor_distancia, self.intentos_sin_progreso, self.max_sin_progreso,
-            self.movimientos, self.max_movimientos)
+
+        if por_ruta is not None:
+            medida = "ruta de {:.2f} m hasta {} ({:.2f} m en linea recta), mejor {:.2f} m".format(distancia, self.objetivo, recta, self.mejor_distancia)
+        elif ruta.get("hay_ruta") is False:
+            medida = "SIN RUTA en el mapa hasta {} ({:.2f} m en linea recta): explora con ir_a_punto".format(self.objetivo, recta)
+        else:
+            medida = "a {:.2f} m de {} en linea recta (mejor {:.2f} m)".format(recta, self.objetivo, self.mejor_distancia)
+        mapa_txt = "" if conocido is None else " Mapa conocido {:.0f} m2 ({:+.0f}).".format(conocido, descubierto)
+        return "Progreso: {}.{} Intentos de navegacion sin avance: {}/{}. Movimientos: {}/{}.".format(
+            medida, mapa_txt, self.intentos_sin_progreso, self.max_sin_progreso, self.movimientos, self.max_movimientos)
 
     def sin_progreso(self):
         return self.intentos_sin_progreso >= self.max_sin_progreso
@@ -175,7 +213,7 @@ def crear_herramienta_reporte(mision):
     return reportar_resultado
 
 
-def envolver_herramienta_mcp(herramienta, mision):
+def envolver_herramienta_mcp(herramienta, mision, consultar_ruta=None):
     """Aplica los limites duros antes de ejecutar una herramienta MCP y anota el resultado."""
     original = herramienta.call
 
@@ -203,7 +241,9 @@ def envolver_herramienta_mcp(herramienta, mision):
         progreso = None
         if isinstance(datos, dict) and nombre in HERRAMIENTAS_DE_MOVIMIENTO | {"esperar_tarea"}:
             mision.ultimo_resultado_robot = datos
-            progreso = mision.actualizar_progreso(nombre, datos)
+            mision.fijar_objetivo(nombre, datos)
+            ruta = await consultar_ruta(mision.objetivo) if consultar_ruta is not None and mision.objetivo else None
+            progreso = mision.actualizar_progreso(nombre, datos, ruta)
         mision.registrar("resultado", herramienta=nombre, resumen=resumir(datos if datos is not None else texto), progreso=progreso)
         imprimir("   <- {}".format(resumir(datos if datos is not None else texto)))
         if progreso is None:
@@ -255,7 +295,16 @@ async def ejecutar(orden, max_pasos, max_movimientos, minutos, esfuerzo, max_sin
         async with ClientSession(lectura, escritura) as sesion:
             await sesion.initialize()
             herramientas_mcp = (await sesion.list_tools()).tools
-            herramientas = [envolver_herramienta_mcp(async_mcp_tool(h, sesion), mision) for h in herramientas_mcp]
+            async def consultar_ruta(destino):
+                # Metros por ruta segun el mapa del robot; sin planificador o con error, None.
+                try:
+                    respuesta = await sesion.call_tool("distancia_por_ruta", {"destino": destino})
+                    datos = json.loads(respuesta.content[0].text)
+                    return datos.get("result", datos)
+                except Exception:  # noqa: BLE001 - el progreso cae a linea recta
+                    return None
+
+            herramientas = [envolver_herramienta_mcp(async_mcp_tool(h, sesion), mision, consultar_ruta) for h in herramientas_mcp]
             herramientas.append(crear_herramienta_reporte(mision))
 
             # Sin robot no tiene sentido gastar tokens: comprobarlo antes de llamar al modelo.

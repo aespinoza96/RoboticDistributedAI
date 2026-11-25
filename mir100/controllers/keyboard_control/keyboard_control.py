@@ -40,6 +40,7 @@ import lidar  # noqa: E402
 import profundidad  # noqa: E402
 import mapa as mapa_mod  # noqa: E402
 import planificador  # noqa: E402
+import personas  # noqa: E402
 
 # ===================================================
 # CONFIGURACION - AJUSTAR EN TU ESCENARIO
@@ -80,7 +81,14 @@ MAX_AVOID_ATTEMPTS = 8
 YOLO_MODEL = "yolo11n.pt"
 YOLO_CONFIDENCE = 0.55
 YOLO_EVERY_N_STEPS = 3
-PERSON_CLEAR_DETECTIONS = 5       # 5 inferencias seguidas sin persona antes de reanudar.
+PERSON_CLEAR_DETECTIONS = 5       # 5 inferencias seguidas sin persona bloqueando antes de reanudar.
+# Personas: pasar con cuidado. Frenar solo si esta DELANTE y cerca; si no, ir despacio y rodearla.
+PERSONA_PARADA_M = 0.60           # holgura frontal a la que se frena (persona en el camino)
+PERSONA_ANGULO_FRENTE = 35.0      # grados a cada lado que cuentan como "delante"
+PERSONA_LENTO_M = 2.0             # mas cerca que esto: velocidad reducida
+PERSONA_VELOCIDAD = 0.12          # m/s cerca de personas
+PERSONA_ZONA_RADIO = 1.0          # m: zona que la ruta evita (el seguimiento recorta ~0.05-0.1 m en curvas)
+PERSONA_MEMORIA_S = 3.0           # s que se recuerda una persona que dejo de verse
 LOG_EVERY_STEPS = 30
 
 # Camara de profundidad: obstaculos por encima del plano del LiDAR (mesas, cintas).
@@ -368,6 +376,10 @@ mode = MODE_GOAL
 saved_mode = MODE_GOAL
 person_detected = False
 person_confidence = 0.0
+people = []              # personas ubicadas en el marco del robot (personas.ubicar)
+person_blocking = False  # una persona delante y cerca: frena el avance
+person_near = False      # una persona cerca: velocidad reducida
+people_zones = []        # (x, y, t) en el mundo, para que el planificador las rodee
 person_clear_count = 0
 annotated_frame = None
 step_counter = 0
@@ -420,7 +432,9 @@ def robot_context():
         "lidar": {k: round(scan[k], 2) for k in ("left", "front_left", "front", "front_right", "right", "back")},
         "lidar_ok": scan["ok"],
         "persona_detectada": person_detected,
+        "personas": [{"holgura": round(p["holgura"], 2), "angulo": round(p["angulo"]), "fuente": p["fuente"]} for p in people],
         "obstaculos_altos": depth_hits,
+        "mapa_conocido_m2": known_map_m2(),
     }
     if navigation_active and mode == MODE_PLAN and navigator.ruta:
         remaining = navigator.metros_restantes(robot_pose(robot_node))
@@ -475,7 +489,7 @@ def start_navigation(name, target=None):
     current_destination_name = name
     navigation_active = True
     base_mode = MODE_PLAN if PLANIFICADOR_ACTIVO else MODE_GOAL
-    mode = MODE_WAIT_PERSON if person_detected else base_mode
+    mode = MODE_WAIT_PERSON if person_blocking and base_mode != MODE_PLAN else base_mode
     saved_mode = base_mode
     if PLANIFICADOR_ACTIVO:
         navigator.iniciar((float(current_destination[0]), float(current_destination[1])))
@@ -485,6 +499,22 @@ def start_navigation(name, target=None):
     progress_position = planar_position(robot_node)
     progress_time = robot.getTime()
     print("\nINICIANDO RUTA: {}".format(name))
+
+
+def route_length(target):
+    """Metros de ruta A* desde la pose actual hasta target (x, y) con el mapa actual, o None."""
+    probe = planificador.Navegador(occupancy_map, PLAN_VELOCIDAD, PLAN_OMEGA)
+    probe.iniciar(target)
+    pose = robot_pose(robot_node)
+    cells = probe.planificar(pose)
+    if cells is None:
+        return None
+    points = [(pose[0], pose[1])] + [occupancy_map.centro(f, c) for f, c in cells]
+    return float(sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])))
+
+
+def known_map_m2():
+    return round(float(np.count_nonzero(occupancy_map.conocido())) * occupancy_map.resolucion ** 2, 1)
 
 
 def start_maneuver(kind, amount):
@@ -527,6 +557,15 @@ def handle_command(client, message):
                 "nota": "Holgura en metros desde el borde del robot; 0.0 = sin lecturas validas (se trata como bloqueado). "
                         "Combina LiDAR (plano a 0.19 m) y camara de profundidad (al frente, hasta 1.95 m); "
                         "obstaculos_altos = sectores donde la profundidad vio algo mas cerca que el LiDAR (p. ej. una mesa)."})
+        elif cmd == "volcar_mapa":
+            # Diagnostico: guarda las capas del mapa (.npz) para ver que bloquea las rutas.
+            path = str(args.get("ruta", ""))
+            if not path.endswith(".npz"):
+                fail("'ruta' debe terminar en .npz")
+                return
+            np.savez(path, log_odds=occupancy_map.log_odds, alto=occupancy_map.alto, ocupado=occupancy_map.ocupado(),
+                     origen=np.array([occupancy_map.x_min, occupancy_map.y_min]), resolucion=occupancy_map.resolucion)
+            ok({"ruta": path, "contexto": robot_context()})
         elif cmd == "volcar_profundidad":
             # Diagnostico: guarda la imagen de profundidad cruda (.npy) para calibrar.
             if depth_camera is None:
@@ -550,6 +589,24 @@ def handle_command(client, message):
             task_id = start_task("ir_a", {"destino": name}, "puente")
             start_navigation(name)
             ok({"tarea_id": task_id, "destino": name})
+        elif cmd == "ruta":
+            # Distancia por ruta (A* sobre el mapa actual) hasta un destino o un punto, sin moverse.
+            if "destino" in args:
+                name = normalize_destination(args.get("destino", ""), destination_by_name)
+                if name is None:
+                    fail("Destino desconocido '{}'. Disponibles: {}".format(args.get("destino"), ", ".join(sorted(destination_by_name))))
+                    return
+                goal = planar_position(destination_by_name[name])
+                label = name
+            else:
+                goal = np.array([float(args.get("x")), float(args.get("y")), 0.0])
+                label = "PUNTO({:.2f}, {:.2f})".format(goal[0], goal[1])
+            here = planar_position(robot_node)
+            meters = route_length((float(goal[0]), float(goal[1])))
+            ok({"destino": label, "hay_ruta": meters is not None,
+                "metros_por_ruta": None if meters is None else round(meters, 2),
+                "metros_en_linea_recta": round(float(np.linalg.norm(goal - here)), 2),
+                "mapa_conocido_m2": known_map_m2()})
         elif cmd == "ir_a_punto":
             # Punto intermedio (waypoint) en coordenadas del mundo, para rodear obstaculos.
             x, y = float(args.get("x")), float(args.get("y"))
@@ -579,7 +636,7 @@ def handle_command(client, message):
             maneuver = None
             ok({"detenido": True, "habia_tarea": had_task})
         else:
-            fail("Comando desconocido '{}'. Comandos: estado, destinos, escanear, ir_a, ir_a_punto, girar, avanzar, parar, volcar_profundidad".format(cmd))
+            fail("Comando desconocido '{}'. Comandos: estado, destinos, escanear, ruta, ir_a, ir_a_punto, girar, avanzar, parar, volcar_profundidad".format(cmd))
     except (TypeError, ValueError) as error:
         fail("Argumentos invalidos para '{}': {}".format(cmd, error))
 
@@ -644,6 +701,8 @@ while robot.step(time_step) != -1:
             boxes = results[0].boxes if results else None
             person_detected = False
             person_confidence = 0.0
+            seen_before = bool(people)
+            people = []
             if boxes is not None:
                 for detected_box in boxes:
                     class_id = int(detected_box.cls[0])
@@ -651,8 +710,25 @@ while robot.step(time_step) != -1:
                     if class_id == 0:
                         person_detected = True
                         person_confidence = max(person_confidence, confidence)
+                        located = personas.ubicar(detected_box.xyxy[0].tolist(), camera_width, camera_height,
+                                                  camera.getFov(), depth_points_xy)
+                        located["confianza"] = confidence
+                        people.append(located)
+            person_blocking = any(p["holgura"] < PERSONA_PARADA_M and abs(p["angulo"]) <= PERSONA_ANGULO_FRENTE for p in people)
+            person_near = any(p["holgura"] < PERSONA_LENTO_M for p in people)
+            # Zonas para el planificador, en el mundo; se olvidan si no se ven por un rato.
+            pose_now = robot_pose(robot_node)
+            people_zones = [z for z in people_zones if robot.getTime() - z[2] < PERSONA_MEMORIA_S]
+            for p in people:
+                wx, wy = mapa_mod.robot_a_mundo(pose_now, p["x"], p["y"])
+                people_zones.append((wx, wy, robot.getTime()))
+            navigator.fijar_zonas([(x, y, PERSONA_ZONA_RADIO) for x, y, _ in people_zones[-6:]])
+            if people and not seen_before and task is not None:
+                nearest = min(people, key=lambda p: p["holgura"])
+                emit("persona_detectada", {"tarea_id": task["tarea_id"], "holgura": round(nearest["holgura"], 2),
+                                           "angulo": round(nearest["angulo"]), "detalle": "Persona a la vista: el robot va despacio y la rodea; solo frena si queda delante a menos de {} m.".format(PERSONA_PARADA_M)})
             annotated_frame = results[0].plot() if results else frame
-            if person_detected:
+            if person_blocking:
                 person_clear_count = 0
             else:
                 person_clear_count += 1
@@ -694,17 +770,21 @@ while robot.step(time_step) != -1:
     target_speed = manual_speed if not navigation_active and maneuver is None else 0.0
     target_omega = manual_omega if not navigation_active and maneuver is None else 0.0
 
-    # Persona: se conservan los datos de evasion, se frena y se reanuda despues.
-    if person_detected and mode != MODE_WAIT_PERSON:
+    # Persona DELANTE y cerca. Con ruta planificada no se espera: la persona es una zona a
+    # evitar, el planificador busca otra ruta y la seguridad solo frena el avance (puede girar).
+    # Sin planificador (navegacion reactiva) se espera a que se aparte.
+    if person_blocking and mode not in (MODE_WAIT_PERSON, MODE_PLAN):
         saved_mode = mode
         mode = MODE_WAIT_PERSON
         manual_speed = 0.0
         manual_omega = 0.0
         person_since = now
         person_warned = False
-        print("PERSONA DETECTADA (confianza {:.2f}): STOP".format(person_confidence))
+        blocker = min(people, key=lambda p: p["holgura"]) if people else {"holgura": 0.0, "angulo": 0.0}
+        print("PERSONA DELANTE a {:.2f} m (angulo {:.0f}): ESPERANDO".format(blocker["holgura"], blocker["angulo"]))
         if task is not None:
-            emit("persona_detectada", {"tarea_id": task["tarea_id"], "confianza": round(person_confidence, 2)})
+            emit("persona_en_el_camino", {"tarea_id": task["tarea_id"], "holgura": round(blocker["holgura"], 2),
+                                          "angulo": round(blocker["angulo"])})
 
     if mode == MODE_WAIT_PERSON:
         target_speed = 0.0
@@ -718,7 +798,7 @@ while robot.step(time_step) != -1:
             person_warned = True
             emit("persona_bloqueando", {"tarea_id": task["tarea_id"], "segundos": round(now - person_since, 1),
                                         "detalle": "Una persona frena la tarea; el robot sigue esperando. Se puede esperar mas o cancelar."})
-        if not person_detected and person_clear_count >= PERSON_CLEAR_DETECTIONS:
+        if not person_blocking and person_clear_count >= PERSON_CLEAR_DETECTIONS:
             mode = saved_mode
             if mode in (MODE_AVOID_TURN, MODE_AVOID_FOLLOW):
                 avoid_started = now
@@ -894,14 +974,18 @@ while robot.step(time_step) != -1:
     if target_speed < 0.0 and back_distance < SAFE_DISTANCE_BACK:
         target_speed = 0.0
         safety_block = "obstaculo_atras"
-    if mode == MODE_WAIT_PERSON or person_detected:
-        target_speed = 0.0
-        target_omega = 0.0
-        safety_block = "persona"
+    if mode == MODE_WAIT_PERSON or person_blocking:
+        if target_speed > 0.0:
+            target_speed = 0.0
+            safety_block = "persona_delante"
+        if mode == MODE_WAIT_PERSON:
+            target_omega = 0.0
+    elif person_near and target_speed > PERSONA_VELOCIDAD:
+        target_speed = PERSONA_VELOCIDAD  # pasar con cuidado
 
     # Navegacion frenada por la seguridad (por ejemplo, no puede girar hacia el destino):
     # se informa en segundos con la regla exacta, en vez de esperar al vigilante de progreso.
-    if not navigation_active or mode == MODE_WAIT_PERSON or person_detected:
+    if not navigation_active or mode == MODE_WAIT_PERSON or person_blocking:
         nav_blocked_since = None  # esperar a una persona no es un bloqueo
     else:
         nav_blocked = (requested_speed != 0.0 and target_speed == 0.0) or (requested_omega != 0.0 and target_omega == 0.0)
