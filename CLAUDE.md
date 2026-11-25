@@ -143,6 +143,15 @@ and no other thread touches Webots.
   `girar(grados)` (+ = left, max 180), `avanzar(metros)` (negative = reverse, max 1.0),
   `parar`, `volcar_profundidad(ruta)`, `volcar_mapa(ruta.npz)`. Movement commands return a `tarea_id`
   immediately; the result arrives as an event.
+- **Per-order options** on `ir_a`, `ir_a_punto`, `girar`, `avanzar` (`parse_task_options`):
+  `velocidad` (0.05–0.40 m/s, plan speed), `al_ver_persona` = `rodear` (default) |
+  `detenerse` (task ends with `estado: "detenida"`, `motivo: "persona_a_la_vista"` as
+  soon as a person is within `distancia_persona`) | `esperar` (forward stops while a
+  person is ahead within `distancia_persona`, also in plan mode, then resumes), and
+  `distancia_persona` (0.3–10 m, default 3). Non-default options are recorded in the
+  task's `args`. People are located with depth, then **LiDAR** points inside the box
+  (legs cut the scan plane), then box height (`fuente: "tamano_aproximado"`, capped at
+  the camera's 10 m); `contexto.personas` includes world `posicion`.
 - Events `{"tipo": "evento", "evento": ..., "t": sim_seconds, "datos": {...}}` go to all
   clients: `tarea_iniciada`, `tarea_terminada`, `evasion_iniciada`, `evasion_terminada`,
   `persona_detectada` (first sighting, with clearance/angle), `persona_en_el_camino`,
@@ -161,7 +170,10 @@ and no other thread touches Webots.
 ### MCP server (`agente/servidor_mcp.py`)
 
 Tools: `estado_robot`, `listar_destinos`, `escanear_entorno`, `distancia_por_ruta`, `ir_a`, `ir_a_punto`,
-`girar`, `avanzar`, `parar`, `esperar_tarea`. Movement tools wait (default) until the task ends
+`girar`, `avanzar`, `parar`, `esperar_tarea`. Movement tools take the per-order options
+above, plus `interrumpir_con` (event names, e.g. `persona_detectada`, `obstaculo_alto`):
+the wait returns early with `estado: "en_curso"`, `interrumpida_por` and the event while
+the task keeps running, so the agent can decide mid-task. They wait (default) until the task ends
 and return `estado`, `motivo`, `detalle`, `contexto`, the event timeline and a
 `sugerencia` from `herramientas.SUGERENCIAS`. Each tool call opens its own bridge
 connection and runs in a worker thread, so `parar` works while `ir_a` is waiting.

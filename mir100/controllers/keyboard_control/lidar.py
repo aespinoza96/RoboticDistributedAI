@@ -70,6 +70,26 @@ def puntos_del_lidar(rangos, rango_maximo, primer_angulo, posicion, fov_grados=F
     return angulo_centro, holgura, validos
 
 
+def puntos_xy(frontal, trasero, rango_maximo_frontal, rango_maximo_trasero, fov_grados=FOV_GRADOS):
+    """(xs, ys) en el marco del robot de los ecos validos de ambos LiDAR (sin los rayos sin eco)."""
+    xs, ys = [], []
+    for rangos, rmax, primer, pos in ((frontal, rango_maximo_frontal, PRIMER_ANGULO_FRONTAL, POSICION_FRONTAL),
+                                      (trasero, rango_maximo_trasero, PRIMER_ANGULO_TRASERO, POSICION_TRASERO)):
+        r = np.array(rangos, dtype=float)
+        if len(r) < 2:
+            continue
+        a = np.radians(primer + np.arange(len(r)) * fov_grados / (len(r) - 1))
+        eco = np.isfinite(r) & (r > RANGO_MINIMO_VALIDO) & (r < rmax * 0.999)
+        x = pos[0] + r[eco] * np.cos(a[eco])
+        y = pos[1] + r[eco] * np.sin(a[eco])
+        fuera = ~((np.abs(x) <= MEDIO_LARGO) & (np.abs(y) <= MEDIO_ANCHO))
+        xs.append(x[fuera])
+        ys.append(y[fuera])
+    if not xs:
+        return np.zeros(0), np.zeros(0)
+    return np.concatenate(xs), np.concatenate(ys)
+
+
 def _en_sector(angulos, desde, hasta):
     # Angulos en (-180, 180]; los sectores pueden cruzar 180 (atras).
     a = np.mod(angulos - desde, 360.0)

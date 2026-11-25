@@ -157,6 +157,20 @@ class TestHerramientas(unittest.TestCase):
         hilo.join(timeout=5)
         self.assertEqual((resultado["estado"], resultado["motivo"]), ("cancelada", "parar"))
 
+    def test_opciones_llegan_al_robot_y_las_vacias_no(self):
+        herramientas.ir_a("ENTREGA_2", velocidad=0.15, al_ver_persona="detenerse", distancia_persona=2.0)
+        self.assertIn(("ir_a", {"destino": "ENTREGA_2", "velocidad": 0.15, "al_ver_persona": "detenerse",
+                                "distancia_persona": 2.0}), self.robot.ordenes)
+        herramientas.girar(30)
+        self.assertIn(("girar", {"grados": 30}), self.robot.ordenes)
+
+    def test_interrumpir_con_evento_corta_la_espera(self):
+        r = herramientas.ir_a("ENTREGA_3", interrumpir_con=["evasion_iniciada"])
+        self.assertEqual((r["estado"], r["interrumpida_por"]), ("en_curso", "evasion_iniciada"))
+        self.assertEqual(r["evento"]["direccion"], "RIGHT")
+        final = herramientas.esperar_tarea(r["tarea_id"], timeout_s=5)
+        self.assertEqual(final["motivo"], "evasion_sin_salida")
+
     def test_ir_a_punto(self):
         r = herramientas.ir_a_punto(1.5, -2.0)
         self.assertEqual((r["estado"], r["motivo"]), ("exito", "llego"))

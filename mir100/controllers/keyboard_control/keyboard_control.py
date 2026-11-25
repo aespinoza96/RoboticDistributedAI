@@ -89,6 +89,10 @@ PERSONA_LENTO_M = 2.0             # mas cerca que esto: velocidad reducida
 PERSONA_VELOCIDAD = 0.12          # m/s cerca de personas
 PERSONA_ZONA_RADIO = 1.0          # m: zona que la ruta evita (el seguimiento recorta ~0.05-0.1 m en curvas)
 PERSONA_MEMORIA_S = 3.0           # s que se recuerda una persona que dejo de verse
+# Opciones por orden (ir_a, ir_a_punto, girar, avanzar): ver parse_task_options.
+OPCIONES_AL_VER_PERSONA = ("rodear", "detenerse", "esperar")
+DISTANCIA_PERSONA_DEFECTO = 3.0   # m de holgura para "detenerse" / "esperar"
+VELOCIDAD_MIN, VELOCIDAD_MAX_ORDEN = 0.05, 0.40
 LOG_EVERY_STEPS = 30
 
 # Camara de profundidad: obstaculos por encima del plano del LiDAR (mesas, cintas).
@@ -379,6 +383,8 @@ person_confidence = 0.0
 people = []              # personas ubicadas en el marco del robot (personas.ubicar)
 person_blocking = False  # una persona delante y cerca: frena el avance
 person_near = False      # una persona cerca: velocidad reducida
+wait_for_people = False  # la tarea pidio "esperar" ante personas
+lidar_points_xy = None
 people_zones = []        # (x, y, t) en el mundo, para que el planificador las rodee
 person_clear_count = 0
 annotated_frame = None
@@ -395,6 +401,7 @@ scan = {"left": 0.0, "front_left": 0.0, "front": 0.0, "front_right": 0.0, "right
 # estado "exito", "fallo" o "cancelada", y un motivo legible por el agente.
 task = None
 last_task = None
+task_options = {}         # opciones de la tarea en curso (velocidad, al_ver_persona, distancia_persona)
 task_counter = 0
 maneuver = None
 safety_block = None
@@ -432,7 +439,8 @@ def robot_context():
         "lidar": {k: round(scan[k], 2) for k in ("left", "front_left", "front", "front_right", "right", "back")},
         "lidar_ok": scan["ok"],
         "persona_detectada": person_detected,
-        "personas": [{"holgura": round(p["holgura"], 2), "angulo": round(p["angulo"]), "fuente": p["fuente"]} for p in people],
+        "personas": [{"holgura": round(p["holgura"], 2), "angulo": round(p["angulo"]), "fuente": p["fuente"],
+                      "posicion": [round(p.get("x_mundo", 0.0), 2), round(p.get("y_mundo", 0.0), 2)]} for p in people],
         "obstaculos_altos": depth_hits,
         "mapa_conocido_m2": known_map_m2(),
     }
@@ -444,11 +452,13 @@ def robot_context():
     return context
 
 
-def start_task(kind, args, origin):
-    global task, task_counter
+def start_task(kind, args, origin, options=None):
+    global task, task_counter, task_options
     if task is not None:
         finish_task("cancelada", "reemplazada", "Una nueva orden ({}) reemplazo a esta tarea".format(kind))
     task_counter += 1
+    task_options = options or {}
+    args = dict(args, **option_args(task_options)) if task_options else args
     task = {"tarea_id": task_counter, "tipo": kind, "args": args, "origen": origin, "estado": "en_curso", "inicio": round(robot.getTime(), 2)}
     emit("tarea_iniciada", dict(task))
     return task_counter
@@ -477,6 +487,27 @@ def stop_navigation():
     manual_omega = 0.0
 
 
+def parse_task_options(args):
+    """Opciones opcionales de una orden de movimiento. Lanza ValueError si son invalidas."""
+    options = {"al_ver_persona": "rodear", "distancia_persona": DISTANCIA_PERSONA_DEFECTO, "velocidad": PLAN_VELOCIDAD}
+    if args.get("al_ver_persona") is not None:
+        value = str(args["al_ver_persona"]).strip().lower()
+        if value not in OPCIONES_AL_VER_PERSONA:
+            raise ValueError("al_ver_persona debe ser una de: {}".format(", ".join(OPCIONES_AL_VER_PERSONA)))
+        options["al_ver_persona"] = value
+    if args.get("distancia_persona") is not None:
+        options["distancia_persona"] = max(0.3, min(10.0, float(args["distancia_persona"])))
+    if args.get("velocidad") is not None:
+        options["velocidad"] = max(VELOCIDAD_MIN, min(VELOCIDAD_MAX_ORDEN, float(args["velocidad"])))
+    return options
+
+
+def option_args(options):
+    # Solo lo que difiere del comportamiento por defecto, para mostrarlo en la tarea.
+    defaults = {"al_ver_persona": "rodear", "distancia_persona": DISTANCIA_PERSONA_DEFECTO, "velocidad": PLAN_VELOCIDAD}
+    return {k: v for k, v in options.items() if v != defaults[k]}
+
+
 def start_navigation(name, target=None):
     # name: DEF de una entrega, o etiqueta de un punto (target dado en coordenadas).
     global navigation_active, current_destination, current_destination_name, mode, saved_mode
@@ -493,6 +524,7 @@ def start_navigation(name, target=None):
     saved_mode = base_mode
     if PLANIFICADOR_ACTIVO:
         navigator.iniciar((float(current_destination[0]), float(current_destination[1])))
+        navigator.velocidad_max = task_options.get("velocidad", PLAN_VELOCIDAD)
     avoid_attempts = 0
     manual_speed = 0.0
     manual_omega = 0.0
@@ -586,7 +618,7 @@ def handle_command(client, message):
             if name is None:
                 fail("Destino desconocido '{}'. Disponibles: {}".format(args.get("destino"), ", ".join(sorted(destination_by_name))))
                 return
-            task_id = start_task("ir_a", {"destino": name}, "puente")
+            task_id = start_task("ir_a", {"destino": name}, "puente", parse_task_options(args))
             start_navigation(name)
             ok({"tarea_id": task_id, "destino": name})
         elif cmd == "ruta":
@@ -617,7 +649,7 @@ def handle_command(client, message):
             target = np.array([x, y, 0.0]) if WORLD_UP_AXIS == "Z" else np.array([x, 0.0, y])
             target = target - np.dot(target, up) * up
             label = "PUNTO({:.2f}, {:.2f})".format(x, y)
-            task_id = start_task("ir_a_punto", {"x": x, "y": y}, "puente")
+            task_id = start_task("ir_a_punto", {"x": x, "y": y}, "puente", parse_task_options(args))
             start_navigation(label, target)
             ok({"tarea_id": task_id, "destino": label})
         elif cmd in ("girar", "avanzar"):
@@ -626,7 +658,7 @@ def handle_command(client, message):
             if amount == 0.0 or abs(amount) > limit:
                 fail("'{}' debe ser distinto de 0 y como maximo {} en valor absoluto".format(key, limit))
                 return
-            task_id = start_task(cmd, {key: amount}, "puente")
+            task_id = start_task(cmd, {key: amount}, "puente", parse_task_options(args))
             start_maneuver(cmd, math.radians(amount) if cmd == "girar" else amount)
             ok({"tarea_id": task_id, key: amount})
         elif cmd == "parar":
@@ -703,6 +735,7 @@ while robot.step(time_step) != -1:
             person_confidence = 0.0
             seen_before = bool(people)
             people = []
+            lidar_points_xy = None
             if boxes is not None:
                 for detected_box in boxes:
                     class_id = int(detected_box.cls[0])
@@ -710,23 +743,42 @@ while robot.step(time_step) != -1:
                     if class_id == 0:
                         person_detected = True
                         person_confidence = max(person_confidence, confidence)
+                        if lidar_points_xy is None:
+                            lidar_points_xy = lidar.puntos_xy(front_lidar.getLayerRangeImage(0), back_lidar.getLayerRangeImage(0),
+                                                              front_lidar.getMaxRange(), back_lidar.getMaxRange(),
+                                                              math.degrees(front_lidar.getFov()))
                         located = personas.ubicar(detected_box.xyxy[0].tolist(), camera_width, camera_height,
-                                                  camera.getFov(), depth_points_xy)
+                                                  camera.getFov(), depth_points_xy, lidar_points_xy)
                         located["confianza"] = confidence
                         people.append(located)
-            person_blocking = any(p["holgura"] < PERSONA_PARADA_M and abs(p["angulo"]) <= PERSONA_ANGULO_FRENTE for p in people)
+            # "esperar": cualquier persona delante dentro de distancia_persona detiene el avance.
+            wait_for_people = task is not None and task_options.get("al_ver_persona") == "esperar"
+            stop_distance = task_options.get("distancia_persona", PERSONA_PARADA_M) if wait_for_people else PERSONA_PARADA_M
+            person_blocking = any(p["holgura"] < stop_distance and abs(p["angulo"]) <= PERSONA_ANGULO_FRENTE for p in people)
             person_near = any(p["holgura"] < PERSONA_LENTO_M for p in people)
             # Zonas para el planificador, en el mundo; se olvidan si no se ven por un rato.
             pose_now = robot_pose(robot_node)
             people_zones = [z for z in people_zones if robot.getTime() - z[2] < PERSONA_MEMORIA_S]
             for p in people:
                 wx, wy = mapa_mod.robot_a_mundo(pose_now, p["x"], p["y"])
+                p["x_mundo"], p["y_mundo"] = wx, wy
                 people_zones.append((wx, wy, robot.getTime()))
+            # "detenerse": la orden termina en cuanto se ve una persona dentro de distancia_persona.
+            if task is not None and task_options.get("al_ver_persona") == "detenerse":
+                seen = [p for p in people if p["holgura"] <= task_options.get("distancia_persona", DISTANCIA_PERSONA_DEFECTO)]
+                if seen:
+                    nearest = min(seen, key=lambda p: p["holgura"])
+                    finish_task("detenida", "persona_a_la_vista", "Detenido como se pidio: persona a {:.2f} m, angulo {:.0f}, en ({:.2f}, {:.2f}) [{}]".format(
+                        nearest["holgura"], nearest["angulo"], nearest["x_mundo"], nearest["y_mundo"], nearest["fuente"]))
+                    stop_navigation()
+                    maneuver = None
             navigator.fijar_zonas([(x, y, PERSONA_ZONA_RADIO) for x, y, _ in people_zones[-6:]])
             if people and not seen_before and task is not None:
                 nearest = min(people, key=lambda p: p["holgura"])
                 emit("persona_detectada", {"tarea_id": task["tarea_id"], "holgura": round(nearest["holgura"], 2),
-                                           "angulo": round(nearest["angulo"]), "detalle": "Persona a la vista: el robot va despacio y la rodea; solo frena si queda delante a menos de {} m.".format(PERSONA_PARADA_M)})
+                                           "angulo": round(nearest["angulo"]), "fuente": nearest["fuente"],
+                                           "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)],
+                                           "al_ver_persona": task_options.get("al_ver_persona", "rodear")})
             annotated_frame = results[0].plot() if results else frame
             if person_blocking:
                 person_clear_count = 0
@@ -773,7 +825,7 @@ while robot.step(time_step) != -1:
     # Persona DELANTE y cerca. Con ruta planificada no se espera: la persona es una zona a
     # evitar, el planificador busca otra ruta y la seguridad solo frena el avance (puede girar).
     # Sin planificador (navegacion reactiva) se espera a que se aparte.
-    if person_blocking and mode not in (MODE_WAIT_PERSON, MODE_PLAN):
+    if person_blocking and (mode not in (MODE_WAIT_PERSON, MODE_PLAN) or (wait_for_people and mode != MODE_WAIT_PERSON)):
         saved_mode = mode
         mode = MODE_WAIT_PERSON
         manual_speed = 0.0
