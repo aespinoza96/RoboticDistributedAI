@@ -85,7 +85,10 @@ YOLO_EVERY_N_STEPS = 3
 PERSON_CLEAR_DETECTIONS = 5       # 5 inferencias seguidas sin persona bloqueando antes de reanudar.
 # Personas: pasar con cuidado. Frenar solo si esta DELANTE y cerca; si no, ir despacio y rodearla.
 PERSONA_PARADA_M = 1.00           # PRIORIDAD: persona a esta holgura o menos = el robot se detiene, avisa y espera
+PERSONA_PARADA_FRENTE_M = 1.50    # de FRENTE (+-PERSONA_ANGULO_FRENTE) frena antes: si no, el planificador
+                                  # esquiva las piernas (que el LiDAR pone en el mapa) antes de llegar a 1 m
 PERSONA_ESPERA_S = 60.0           # segundos (de simulacion) que espera antes de retomar la tarea
+VERSION_CONTROLADOR = "2026-11-24 personas: parada 1.0 m (1.5 m de frente), espera 60 s, ruta sin desvio"
 PERSONA_REARME_M = 1.30           # la parada se rearma cuando la persona se aleja mas que esto (o deja de verse)
 PERSONA_ANGULO_FRENTE = 35.0      # grados a cada lado que cuentan como "delante"
 PERSONA_LENTO_M = 2.0             # mas cerca que esto: velocidad reducida
@@ -492,6 +495,11 @@ def stop_navigation():
     manual_omega = 0.0
 
 
+def person_stop_distance(person):
+    """Holgura a la que una persona detiene al robot: mas lejos si esta de frente."""
+    return PERSONA_PARADA_FRENTE_M if abs(person["angulo"]) <= PERSONA_ANGULO_FRENTE else PERSONA_PARADA_M
+
+
 def parse_task_options(args):
     """Opciones opcionales de una orden de movimiento. Lanza ValueError si son invalidas."""
     options = {"al_ver_persona": "continuar", "distancia_persona": DISTANCIA_PERSONA_DEFECTO, "velocidad": PLAN_VELOCIDAD}
@@ -685,7 +693,8 @@ def handle_command(client, message):
         fail("Error interno del controlador en '{}': {}: {}".format(cmd, type(error).__name__, error))
 
 
-print("\nMiR100: YOLO + LiDAR + NAVEGACION LOCAL REACTIVA")
+print("\nMiR100: YOLO + LiDAR + profundidad + mapa A*")
+print("VERSION DEL CONTROLADOR: " + VERSION_CONTROLADOR)
 print("Teclas 1/2/3: destino | 0 o ESPACIO: cancelar | Flechas: control manual")
 print("Evasion: regla local con LiDAR (lado con mas espacio libre)")
 print("PRECAUCION: prueba inicial en simulacion despejada, velocidad baja\n")
@@ -766,7 +775,7 @@ while robot.step(time_step) != -1:
                             people.append(located)
                 # "esperar": cualquier persona delante dentro de distancia_persona detiene el avance.
                 wait_for_people = task is not None and task_options.get("al_ver_persona") == "esperar"
-                stop_distance = task_options.get("distancia_persona", PERSONA_PARADA_M) if wait_for_people else PERSONA_PARADA_M
+                stop_distance = task_options.get("distancia_persona", PERSONA_PARADA_FRENTE_M) if wait_for_people else PERSONA_PARADA_FRENTE_M
                 person_blocking = any(p["holgura"] < stop_distance and abs(p["angulo"]) <= PERSONA_ANGULO_FRENTE for p in people)
                 person_near = any(p["holgura"] < PERSONA_LENTO_M for p in people)
                 # Zonas para el planificador, en el mundo; se olvidan si no se ven por un rato.
@@ -779,7 +788,7 @@ while robot.step(time_step) != -1:
                 # PRIORIDAD YOLO: persona a PERSONA_PARADA_M o menos = detenerse y avisar, sea cual sea
                 # la orden (tambien sin tarea). Se avisa una vez por encuentro; despues la seguridad sigue
                 # impidiendo avanzar hacia ella, pero el agente puede girar o retroceder.
-                close = [p for p in people if p["holgura"] <= PERSONA_PARADA_M]
+                close = [p for p in people if p["holgura"] <= person_stop_distance(p)]
                 if close and not person_close_latched:
                     person_close_latched = True
                     nearest = min(close, key=lambda p: p["holgura"])
@@ -802,7 +811,7 @@ while robot.step(time_step) != -1:
                                            "angulo": round(nearest["angulo"]), "fuente": nearest["fuente"],
                                            "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)],
                                            "espera_s": PERSONA_ESPERA_S if moving_task else 0, "detalle": detail})
-                elif not any(p["holgura"] <= PERSONA_REARME_M for p in people):
+                elif not any(p["holgura"] <= person_stop_distance(p) + PERSONA_REARME_M - PERSONA_PARADA_M for p in people):
                     person_close_latched = False
                 # "detenerse": la orden termina en cuanto se ve una persona dentro de distancia_persona.
                 if task is not None and task_options.get("al_ver_persona") == "detenerse":
@@ -825,6 +834,15 @@ while robot.step(time_step) != -1:
                                                "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)],
                                                "al_ver_persona": task_options.get("al_ver_persona", "continuar")})
                 annotated_frame = results[0].plot() if results else frame
+                # Distancia que mide el robot a cada persona, sobre la ventana de YOLO.
+                if boxes is not None and people:
+                    person_boxes = [b for b in boxes if int(b.cls[0]) == 0]
+                    for b, p in zip(person_boxes, people):
+                        x1, y1 = [int(v) for v in b.xyxy[0].tolist()[:2]]
+                        stops = person_stop_distance(p) >= p["holgura"]
+                        cv2.putText(annotated_frame, "{:.2f} m [{}]{}".format(p["holgura"], p["fuente"], " STOP" if stops else ""),
+                                    (x1, max(15, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
+                                    (0, 0, 255) if stops else (0, 200, 0), 2, cv2.LINE_AA)
                 if person_blocking:
                     person_clear_count = 0
                 else:
@@ -897,7 +915,7 @@ while robot.step(time_step) != -1:
             # Espera por persona cercana (PERSONA_ESPERA_S): no se mueve aunque la persona se aparte.
             if now >= person_pause_until:
                 person_pause_until = None
-                still_close = [p for p in people if p["holgura"] <= PERSONA_PARADA_M]
+                still_close = [p for p in people if p["holgura"] <= person_stop_distance(p)]
                 if still_close and task is not None:
                     nearest = min(still_close, key=lambda p: p["holgura"])
                     finish_task("detenida", "persona_sigue_cerca", "Tras esperar {:.0f} s la persona sigue a {:.2f} m (en ({:.2f}, {:.2f})): el robot queda detenido".format(

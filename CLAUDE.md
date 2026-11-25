@@ -83,8 +83,13 @@ Runs one `robot.step()` loop. Each step:
    world, was 1 m): each person box is located by `personas.ubicar` (bearing from the box;
    distance from depth points inside the box, else LiDAR points, else box height marked
    `tamano_aproximado`). Detection alone never stops the robot: the rule is **distance**.
-   - **Priority stop:** a person at `PERSONA_PARADA_M` (1.0 m) clearance or less, at any
-     angle, stops the robot and starts a `PERSONA_ESPERA_S` (60 s, sim time) wait in
+   - **Priority stop:** a person at `PERSONA_PARADA_M` (1.0 m) clearance or less, or
+     `PERSONA_PARADA_FRENTE_M` (1.5 m) when ahead (±35°, `person_stop_distance`), stops the
+     robot. The frontal margin exists because the LiDAR puts the person's legs in the map
+     and the planner would otherwise swerve before reaching 1 m. Verified in Webots: stopped
+     1.50 m in front of the pedestrian, located within ~0.15 m of its real position. The
+     YOLO window shows each person's measured clearance and source (red = STOP), and the
+     controller prints `VERSION DEL CONTROLADOR` at start. The stop and starts a `PERSONA_ESPERA_S` (60 s, sim time) wait in
      `WAIT_PERSON`; event `persona_cerca` (distance, angle, world position). After the
      wait the task resumes if the person moved away, else it ends `detenida` /
      `persona_sigue_cerca`. New orders during the wait also wait. Fires once per
