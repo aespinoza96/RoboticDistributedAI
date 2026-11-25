@@ -27,7 +27,7 @@ class TestOpciones(unittest.TestCase):
 
     def test_por_defecto(self):
         o = self.e["parse_task_options"]({"destino": "ENTREGA_1"})
-        self.assertEqual(o["al_ver_persona"], "rodear")
+        self.assertEqual(o["al_ver_persona"], "continuar")
         self.assertEqual(self.e["option_args"](o), {})
 
     def test_detenerse_y_limites(self):

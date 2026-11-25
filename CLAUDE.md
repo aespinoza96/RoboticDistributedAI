@@ -80,19 +80,22 @@ Runs one `robot.step()` loop. Each step:
    the raw image for calibration. Verified at the world's table: tabletop seen at
    0.67–0.69 m height where the LiDAR read 0.2–0.3 m farther.
 2. **YOLO + people** (every `YOLO_EVERY_N_STEPS`; camera 640×480, 90°, `far 10` in the
-   world, was 1 m): each person box is located by `personas.ubicar` (bearing from the box,
-   distance from depth points inside the box, else from box height). The robot **passes
-   carefully**: under `PERSONA_LENTO_M` (2 m) speed is capped at `PERSONA_VELOCIDAD`;
-   **YOLO has priority:** a person at `PERSONA_PARADA_M` (0.6 m) clearance or less always
-   stops the robot (navigation, maneuver or manual) and ends the task with
-   `estado: "detenida"`, `motivo: "persona_cerca"` and the person's distance, angle and
-   world position (event `persona_cerca` if there is no task). It fires once per encounter
-   and re-arms when the person is beyond `PERSONA_REARME_M` (0.9 m) or out of view;
-   people become keep-out zones (`PERSONA_ZONA_RADIO` 1.0 m, remembered
-   `PERSONA_MEMORIA_S`) that the planner routes around; forward motion stops only if a
-   person is **ahead** (±`PERSONA_ANGULO_FRENTE`) within `PERSONA_PARADA_M` (0.6 m) —
-   turning stays allowed so the planner can swing around. Only reactive (non-planned)
-   navigation enters `WAIT_PERSON`. Shows an OpenCV window with detections.
+   world, was 1 m): each person box is located by `personas.ubicar` (bearing from the box;
+   distance from depth points inside the box, else LiDAR points, else box height marked
+   `tamano_aproximado`). Detection alone never stops the robot: the rule is **distance**.
+   - **Priority stop:** a person at `PERSONA_PARADA_M` (1.0 m) clearance or less, at any
+     angle, stops the robot and starts a `PERSONA_ESPERA_S` (60 s, sim time) wait in
+     `WAIT_PERSON`; event `persona_cerca` (distance, angle, world position). After the
+     wait the task resumes if the person moved away, else it ends `detenida` /
+     `persona_sigue_cerca`. New orders during the wait also wait. Fires once per
+     encounter; re-arms beyond `PERSONA_REARME_M` (1.3 m) or out of view.
+   - Under `PERSONA_LENTO_M` (2 m) speed is capped at `PERSONA_VELOCIDAD`; forward motion
+     is blocked for a person ahead (±`PERSONA_ANGULO_FRENTE`) within the stop distance.
+   - **The route does not change for people by default** (`al_ver_persona="continuar"`):
+     keep-out zones used to close corridors (worse with size-estimated distances) so the
+     robot never approached. With `al_ver_persona="rodear"` people become 1.0 m zones
+     (`PERSONA_ZONA_RADIO`, remembered `PERSONA_MEMORIA_S`) the planner avoids.
+   Shows an OpenCV window with detections.
 3. **Keyboard**: `1/2/3` start a route to ENTREGA_1/2/3, `0`/space cancel, arrows give
    manual control (only when not navigating).
 4. **State machine** (`mode`):
@@ -149,7 +152,7 @@ and no other thread touches Webots.
   `parar`, `volcar_profundidad(ruta)`, `volcar_mapa(ruta.npz)`. Movement commands return a `tarea_id`
   immediately; the result arrives as an event.
 - **Per-order options** on `ir_a`, `ir_a_punto`, `girar`, `avanzar` (`parse_task_options`):
-  `velocidad` (0.05–0.40 m/s, plan speed), `al_ver_persona` = `rodear` (default) |
+  `velocidad` (0.05–0.40 m/s, plan speed), `al_ver_persona` = `continuar` (default) | `rodear` |
   `detenerse` (task ends with `estado: "detenida"`, `motivo: "persona_a_la_vista"` as
   soon as a person is within `distancia_persona`) | `esperar` (forward stops while a
   person is ahead within `distancia_persona`, also in plan mode, then resumes), and

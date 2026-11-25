@@ -84,15 +84,16 @@ YOLO_CONFIDENCE = 0.55
 YOLO_EVERY_N_STEPS = 3
 PERSON_CLEAR_DETECTIONS = 5       # 5 inferencias seguidas sin persona bloqueando antes de reanudar.
 # Personas: pasar con cuidado. Frenar solo si esta DELANTE y cerca; si no, ir despacio y rodearla.
-PERSONA_PARADA_M = 0.60           # PRIORIDAD: persona a esta holgura o menos = el robot se detiene y avisa
-PERSONA_REARME_M = 0.90           # la parada se rearma cuando la persona se aleja mas que esto (o deja de verse)
+PERSONA_PARADA_M = 1.00           # PRIORIDAD: persona a esta holgura o menos = el robot se detiene, avisa y espera
+PERSONA_ESPERA_S = 60.0           # segundos (de simulacion) que espera antes de retomar la tarea
+PERSONA_REARME_M = 1.30           # la parada se rearma cuando la persona se aleja mas que esto (o deja de verse)
 PERSONA_ANGULO_FRENTE = 35.0      # grados a cada lado que cuentan como "delante"
 PERSONA_LENTO_M = 2.0             # mas cerca que esto: velocidad reducida
 PERSONA_VELOCIDAD = 0.12          # m/s cerca de personas
 PERSONA_ZONA_RADIO = 1.0          # m: zona que la ruta evita (el seguimiento recorta ~0.05-0.1 m en curvas)
 PERSONA_MEMORIA_S = 3.0           # s que se recuerda una persona que dejo de verse
 # Opciones por orden (ir_a, ir_a_punto, girar, avanzar): ver parse_task_options.
-OPCIONES_AL_VER_PERSONA = ("rodear", "detenerse", "esperar")
+OPCIONES_AL_VER_PERSONA = ("continuar", "rodear", "detenerse", "esperar")   # defecto: continuar
 DISTANCIA_PERSONA_DEFECTO = 3.0   # m de holgura para "detenerse" / "esperar"
 VELOCIDAD_MIN, VELOCIDAD_MAX_ORDEN = 0.05, 0.40
 LOG_EVERY_STEPS = 30
@@ -387,6 +388,7 @@ person_blocking = False  # una persona delante y cerca: frena el avance
 person_near = False      # una persona cerca: velocidad reducida
 wait_for_people = False  # la tarea pidio "esperar" ante personas
 person_close_latched = False  # ya se aviso de la persona cercana actual (evita repetir la parada)
+person_pause_until = None     # fin de la espera de PERSONA_ESPERA_S (tiempo de simulacion), o None
 lidar_points_xy = None
 people_zones = []        # (x, y, t) en el mundo, para que el planificador las rodee
 person_clear_count = 0
@@ -492,7 +494,7 @@ def stop_navigation():
 
 def parse_task_options(args):
     """Opciones opcionales de una orden de movimiento. Lanza ValueError si son invalidas."""
-    options = {"al_ver_persona": "rodear", "distancia_persona": DISTANCIA_PERSONA_DEFECTO, "velocidad": PLAN_VELOCIDAD}
+    options = {"al_ver_persona": "continuar", "distancia_persona": DISTANCIA_PERSONA_DEFECTO, "velocidad": PLAN_VELOCIDAD}
     if args.get("al_ver_persona") is not None:
         value = str(args["al_ver_persona"]).strip().lower()
         if value not in OPCIONES_AL_VER_PERSONA:
@@ -507,7 +509,7 @@ def parse_task_options(args):
 
 def option_args(options):
     # Solo lo que difiere del comportamiento por defecto, para mostrarlo en la tarea.
-    defaults = {"al_ver_persona": "rodear", "distancia_persona": DISTANCIA_PERSONA_DEFECTO, "velocidad": PLAN_VELOCIDAD}
+    defaults = {"al_ver_persona": "continuar", "distancia_persona": DISTANCIA_PERSONA_DEFECTO, "velocidad": PLAN_VELOCIDAD}
     return {k: v for k, v in options.items() if v != defaults[k]}
 
 
@@ -525,6 +527,8 @@ def start_navigation(name, target=None):
     base_mode = MODE_PLAN if PLANIFICADOR_ACTIVO else MODE_GOAL
     mode = MODE_WAIT_PERSON if person_blocking and base_mode != MODE_PLAN else base_mode
     saved_mode = base_mode
+    if person_pause_until is not None and robot.getTime() < person_pause_until:
+        mode = MODE_WAIT_PERSON  # una orden nueva tambien respeta la espera por persona en curso
     if PLANIFICADOR_ACTIVO:
         navigator.iniciar((float(current_destination[0]), float(current_destination[1])))
         navigator.velocidad_max = task_options.get("velocidad", PLAN_VELOCIDAD)
@@ -553,8 +557,10 @@ def known_map_m2():
 
 
 def start_maneuver(kind, amount):
-    global maneuver, manual_speed, manual_omega
+    global maneuver, manual_speed, manual_omega, mode, saved_mode
     stop_navigation()
+    if person_pause_until is not None and robot.getTime() < person_pause_until:
+        saved_mode, mode = mode, MODE_WAIT_PERSON  # respeta la espera por persona en curso
     manual_speed = 0.0
     manual_omega = 0.0
     maneuver = {"tipo": kind, "objetivo": amount, "hecho": 0.0, "inicio": robot.getTime(),
@@ -777,18 +783,25 @@ while robot.step(time_step) != -1:
                 if close and not person_close_latched:
                     person_close_latched = True
                     nearest = min(close, key=lambda p: p["holgura"])
-                    detail = "Persona encontrada a {:.2f} m (angulo {:.0f}, en ({:.2f}, {:.2f}) [{}]): el robot se detuvo".format(
-                        nearest["holgura"], nearest["angulo"], nearest["x_mundo"], nearest["y_mundo"], nearest["fuente"])
-                    print("PERSONA CERCA: " + detail)
-                    if task is not None:
-                        finish_task("detenida", "persona_cerca", detail)
-                    else:
-                        emit("persona_cerca", {"holgura": round(nearest["holgura"], 2), "angulo": round(nearest["angulo"]),
-                                               "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)], "detalle": detail})
-                    stop_navigation()
-                    maneuver = None
                     manual_speed = 0.0
                     manual_omega = 0.0
+                    moving_task = task is not None and (navigation_active or maneuver is not None)
+                    if moving_task:
+                        # Se detiene y ESPERA: al terminar la espera retoma la tarea (ver bloque WAIT_PERSON).
+                        person_pause_until = robot.getTime() + PERSONA_ESPERA_S
+                        if mode != MODE_WAIT_PERSON:
+                            saved_mode = mode
+                            mode = MODE_WAIT_PERSON
+                        person_since = robot.getTime()
+                        person_warned = True
+                    detail = "Persona a {:.2f} m (angulo {:.0f}, en ({:.2f}, {:.2f}) [{}]): el robot se detuvo{}".format(
+                        nearest["holgura"], nearest["angulo"], nearest["x_mundo"], nearest["y_mundo"], nearest["fuente"],
+                        " y espera {:.0f} s antes de retomar la tarea".format(PERSONA_ESPERA_S) if moving_task else "")
+                    print("PERSONA CERCA: " + detail)
+                    emit("persona_cerca", {"tarea_id": task["tarea_id"] if task else None, "holgura": round(nearest["holgura"], 2),
+                                           "angulo": round(nearest["angulo"]), "fuente": nearest["fuente"],
+                                           "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)],
+                                           "espera_s": PERSONA_ESPERA_S if moving_task else 0, "detalle": detail})
                 elif not any(p["holgura"] <= PERSONA_REARME_M for p in people):
                     person_close_latched = False
                 # "detenerse": la orden termina en cuanto se ve una persona dentro de distancia_persona.
@@ -800,13 +813,17 @@ while robot.step(time_step) != -1:
                             nearest["holgura"], nearest["angulo"], nearest["x_mundo"], nearest["y_mundo"], nearest["fuente"]))
                         stop_navigation()
                         maneuver = None
-                navigator.fijar_zonas([(x, y, PERSONA_ZONA_RADIO) for x, y, _ in people_zones[-6:]])
+                # Solo con al_ver_persona="rodear" la persona es una zona que la ruta evita. Por defecto
+                # ("continuar") la ruta NO cambia: las zonas tapaban pasillos (sobre todo con distancias
+                # estimadas por tamano) y el robot nunca se acercaba; la seguridad la cubre la parada a 1 m.
+                avoid_people = task is not None and task_options.get("al_ver_persona") == "rodear"
+                navigator.fijar_zonas([(x, y, PERSONA_ZONA_RADIO) for x, y, _ in people_zones[-6:]] if avoid_people else [])
                 if people and not seen_before and task is not None:
                     nearest = min(people, key=lambda p: p["holgura"])
                     emit("persona_detectada", {"tarea_id": task["tarea_id"], "holgura": round(nearest["holgura"], 2),
                                                "angulo": round(nearest["angulo"]), "fuente": nearest["fuente"],
                                                "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)],
-                                               "al_ver_persona": task_options.get("al_ver_persona", "rodear")})
+                                               "al_ver_persona": task_options.get("al_ver_persona", "continuar")})
                 annotated_frame = results[0].plot() if results else frame
                 if person_blocking:
                     person_clear_count = 0
@@ -876,11 +893,27 @@ while robot.step(time_step) != -1:
         progress_time = now
         if maneuver is not None:
             maneuver["inicio"] += time_step / 1000.0
-        if task is not None and not person_warned and person_since is not None and now - person_since > PERSONA_BLOQUEANDO_SEGUNDOS:
+        if person_pause_until is not None:
+            # Espera por persona cercana (PERSONA_ESPERA_S): no se mueve aunque la persona se aparte.
+            if now >= person_pause_until:
+                person_pause_until = None
+                still_close = [p for p in people if p["holgura"] <= PERSONA_PARADA_M]
+                if still_close and task is not None:
+                    nearest = min(still_close, key=lambda p: p["holgura"])
+                    finish_task("detenida", "persona_sigue_cerca", "Tras esperar {:.0f} s la persona sigue a {:.2f} m (en ({:.2f}, {:.2f})): el robot queda detenido".format(
+                        PERSONA_ESPERA_S, nearest["holgura"], nearest["x_mundo"], nearest["y_mundo"]))
+                    stop_navigation()
+                    maneuver = None
+                else:
+                    mode = saved_mode
+                    print("ESPERA POR PERSONA TERMINADA: REANUDANDO")
+                    if task is not None:
+                        emit("persona_espera_terminada", {"tarea_id": task["tarea_id"], "espera_s": PERSONA_ESPERA_S})
+        elif task is not None and not person_warned and person_since is not None and now - person_since > PERSONA_BLOQUEANDO_SEGUNDOS:
             person_warned = True
             emit("persona_bloqueando", {"tarea_id": task["tarea_id"], "segundos": round(now - person_since, 1),
                                         "detalle": "Una persona frena la tarea; el robot sigue esperando. Se puede esperar mas o cancelar."})
-        if not person_blocking and person_clear_count >= PERSON_CLEAR_DETECTIONS:
+        if person_pause_until is None and not person_blocking and person_clear_count >= PERSON_CLEAR_DETECTIONS:
             mode = saved_mode
             if mode in (MODE_AVOID_TURN, MODE_AVOID_FOLLOW):
                 avoid_started = now

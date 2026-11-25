@@ -13,6 +13,8 @@ import time
 from robot_cliente import PUERTO_POR_DEFECTO, RobotCliente, RobotError
 
 ESPERA_MAX_SEGUNDOS = 600.0
+# Eventos que SIEMPRE cortan la espera de una tool, para que el agente se entere al momento.
+INTERRUPCIONES_SIEMPRE = {"persona_cerca"}
 
 # Que puede intentar el agente ante cada motivo de fallo. No es una orden: el
 # agente decide, y la capa de seguridad del robot sigue teniendo la ultima palabra.
@@ -23,7 +25,8 @@ SUGERENCIAS = {
     "limite_evasiones": "El robot esquivo varias veces sin llegar. Prueba retroceder, girar hacia el lado con mas espacio (escanear_entorno) y reintentar ir_a; si se repite, la ruta probablemente esta bloqueada.",
     "evasion_sin_salida": "La evasion no encontro salida. Prueba retroceder 0.5 m, girar 45-90 grados hacia el lado con mas espacio y reintentar ir_a.",
     "bloqueado_por_seguridad": "La seguridad freno la navegacion (ver detalle: que regla y en que modo). Mira obstaculos_altos en escanear_entorno y rodea el obstaculo con ir_a_punto hacia un lado libre, en vez de reintentar ir_a igual.",
-    "persona_cerca": "PRIORIDAD: el robot encontro una persona a 0.6 m o menos y se detuvo solo (ver detalle: distancia, angulo y posicion). Informa al operador. No avances hacia ella; si la orden debe seguir, rodeala (girar o retroceder y luego ir_a / ir_a_punto).",
+    "persona_cerca": "PRIORIDAD: el robot vio una persona a 1 m o menos, se detuvo y espera 60 s; despues retoma la tarea solo si la persona se aparto. Informa al operador. Usa esperar_tarea para seguir la tarea, o parar si la orden lo pide.",
+    "persona_sigue_cerca": "Tras la espera de 60 s la persona sigue a 1 m o menos y el robot quedo detenido. Informa al operador; para seguir, rodea a la persona (girar o retroceder y luego ir_a / ir_a_punto) o espera.",
     "persona_a_la_vista": "El robot se detuvo al ver a una persona, como se pidio (ver detalle: distancia, angulo y posicion). Sigue la orden segun lo que pidio el operador.",
     "sin_ruta": "El mapa no tiene camino libre hacia el destino con lo que conoce. Explora con ir_a_punto hacia zonas que el robot aun no vio (por ejemplo por el otro extremo del obstaculo) y vuelve a intentar; si todo esta cerrado, reportalo.",
     "meta_inalcanzable": "El destino cae dentro de un obstaculo segun el mapa; el robot quedo lo mas cerca posible. Informa que hay algo ocupando el punto de entrega.",
@@ -65,7 +68,7 @@ def _esperar(robot, tarea_id, timeout, al_evento=None, interrumpir_con=None):
     si llega uno, devuelve en ese momento con estado "en_curso" (la tarea SIGUE) para que el
     agente decida: parar, seguir esperando (esperar_tarea) o dar otra orden.
     """
-    interrumpir_con = set(interrumpir_con or ())
+    interrumpir_con = set(interrumpir_con or ()) | INTERRUPCIONES_SIEMPRE
     timeout = min(float(timeout), ESPERA_MAX_SEGUNDOS)
     inicio = time.monotonic()
     linea_de_tiempo = []
@@ -97,7 +100,9 @@ def _esperar(robot, tarea_id, timeout, al_evento=None, interrumpir_con=None):
         if evento["evento"] in interrumpir_con:
             return {"tarea_id": tarea_id, "estado": "en_curso", "interrumpida_por": evento["evento"],
                     "evento": {k: v for k, v in datos.items() if k != "tarea_id"}, "eventos": linea_de_tiempo,
-                    "detalle": "La tarea SIGUE en curso. Decide: parar, esperar_tarea para seguir, u otra orden (que la reemplaza)."}
+                    "detalle": datos.get("detalle") or "La tarea SIGUE en curso.",
+                    "sugerencia": SUGERENCIAS.get(evento["evento"],
+                                                  "La tarea SIGUE en curso. Decide: parar, esperar_tarea para seguir, u otra orden (que la reemplaza).")}
 
 
 def _orden(puerto, cmd, esperar, timeout, al_evento, interrumpir_con=None, **args):

@@ -27,8 +27,10 @@ Principios:
   ir_a_punto hacia el lado libre; despues reintenta ir_a. Si tras 3 intentos el robot
   no se acerca al destino, deten el robot y explica con claridad por que no se puede seguir.
 - Nunca reanudes una tarea que un operador cancelo desde el teclado sin consultar.
-- PRIORIDAD: si el robot ve una persona a 0.6 m o menos se detiene solo y la tarea termina
-  con estado "detenida" y motivo "persona_cerca" (con su posicion). Informalo siempre.
+- PRIORIDAD: si el robot ve una persona a 1 m o menos se detiene solo, espera 60 s y luego
+  retoma la tarea (si la persona sigue cerca, la tarea termina "detenida" con motivo
+  "persona_sigue_cerca"). La herramienta en curso vuelve al instante con interrumpida_por
+  "persona_cerca": informalo siempre y usa esperar_tarea para seguir.
 """
 
 servidor = MCPServer(name="mir100", title="Robot MiR100 (Webots)", instructions=INSTRUCCIONES)
@@ -79,7 +81,8 @@ async def ir_a(destino: str, esperar: bool = True, timeout_s: float = 300.0, vel
     estado (exito / fallo / cancelada / detenida), motivo, detalle, contexto, eventos y
     sugerencia. velocidad: m/s maxima (0.05-0.40, defecto 0.30).
     Opciones (todas opcionales):
-    - al_ver_persona: "rodear" (por defecto: va despacio y la rodea), "detenerse" (la
+    - al_ver_persona: "continuar" (por defecto: mantiene la ruta y va despacio cerca),
+      "rodear" (la persona es una zona de 1 m que la ruta evita), "detenerse" (la
       orden TERMINA en cuanto ve una persona a distancia_persona o menos: estado
       "detenida", motivo "persona_a_la_vista") o "esperar" (frena mientras haya una persona
       delante a distancia_persona o menos y sigue cuando se aparta).
@@ -99,7 +102,8 @@ async def ir_a_punto(x: float, y: float, esperar: bool = True, timeout_s: float 
     listar_destinos. Sirve como punto intermedio para rodear o para explorar. Mismo
     resultado y opciones que ir_a.
     Opciones (todas opcionales):
-    - al_ver_persona: "rodear" (por defecto: va despacio y la rodea), "detenerse" (la
+    - al_ver_persona: "continuar" (por defecto: mantiene la ruta y va despacio cerca),
+      "rodear" (la persona es una zona de 1 m que la ruta evita), "detenerse" (la
       orden TERMINA en cuanto ve una persona a distancia_persona o menos: estado
       "detenida", motivo "persona_a_la_vista") o "esperar" (frena mientras haya una persona
       delante a distancia_persona o menos y sigue cuando se aparta).
@@ -118,7 +122,8 @@ async def girar(grados: float, esperar: bool = True, al_ver_persona: str | None 
     absoluto. Para BUSCAR a alguien: girar con al_ver_persona="detenerse" para que pare
     mirando a la primera persona que vea. Cancela la tarea en curso.
     Opciones (todas opcionales):
-    - al_ver_persona: "rodear" (por defecto: va despacio y la rodea), "detenerse" (la
+    - al_ver_persona: "continuar" (por defecto: mantiene la ruta y va despacio cerca),
+      "rodear" (la persona es una zona de 1 m que la ruta evita), "detenerse" (la
       orden TERMINA en cuanto ve una persona a distancia_persona o menos: estado
       "detenida", motivo "persona_a_la_vista") o "esperar" (frena mientras haya una persona
       delante a distancia_persona o menos y sigue cuando se aparta).
@@ -136,7 +141,8 @@ async def avanzar(metros: float, esperar: bool = True, al_ver_persona: str | Non
     """Avanza en linea recta; negativo = retroceder. Maximo 1.0 m en valor absoluto. Util
     para salir de un atasco. Cancela la tarea en curso.
     Opciones (todas opcionales):
-    - al_ver_persona: "rodear" (por defecto: va despacio y la rodea), "detenerse" (la
+    - al_ver_persona: "continuar" (por defecto: mantiene la ruta y va despacio cerca),
+      "rodear" (la persona es una zona de 1 m que la ruta evita), "detenerse" (la
       orden TERMINA en cuanto ve una persona a distancia_persona o menos: estado
       "detenida", motivo "persona_a_la_vista") o "esperar" (frena mientras haya una persona
       delante a distancia_persona o menos y sigue cuando se aparta).
