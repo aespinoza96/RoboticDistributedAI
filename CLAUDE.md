@@ -21,6 +21,8 @@ mir100/                                  Webots project root (open this in Webot
 │   │   ├── puente.py                    Command bridge: local TCP server, JSON lines
 │   │   ├── lidar.py                     LiDAR sectors by real ray angle (pure numpy)
 │   │   ├── profundidad.py               Depth camera → 3D obstacles above the LiDAR plane
+│   │   ├── mapa.py                      Occupancy map (LiDAR layer + depth 'alto' layer)
+│   │   ├── planificador.py              A* route + pure pursuit (Navegador)
 │   │   └── yolo11n.pt                   YOLO11 nano weights (COCO), loaded by name
 │   ├── keyboard_matlab/keyboard_matlab.m  Leftover stock Webots MATLAB keyboard teleop (unused)
 │   └── Makefile                         Stock Webots Makefile (not needed for Python)
@@ -95,6 +97,22 @@ Runs one `robot.step()` loop. Each step:
    motion if the corridor isn't clear, no in-place turn without turn clearance, no
    reverse if `back` is too close, full stop on a person or bad LiDAR.
 6. Differential drive: `(v ∓ ω·DISTANCE_TO_CENTER) / WHEEL_RADIUS` (left / right).
+
+### Planned navigation (`mapa.py`, `planificador.py`)
+
+`ir_a` / `ir_a_punto` (and keys 1/2/3) run in `MODE_PLAN` when `PLANIFICADOR_ACTIVO`
+(`MIR_PLANIFICADOR=0` falls back to the reactive GOAL/AVOID modes). The occupancy map
+(0.1 m cells, −10..10 × −7..7) is updated every `MAPA_CADA_N_PASOS` from both LiDARs
+(free + hit, log-odds) and from depth obstacle points in a separate `alto` layer that
+LiDAR rays can't erase (they pass under tables). The map persists across tasks.
+`Navegador` plans A* with obstacles inflated 0.55 m (soft cost to 0.95 m), unknown cells
+treated as free, replans every 2 s or when the path becomes occupied, and follows the
+path with pure pursuit. In plan mode the final safety layer uses collision margins
+(`PLAN_*_MIN`) instead of the conservative reactive ones, keeps turning allowed when
+forward is blocked, and forces a replan. New outcomes: `sin_ruta` (no free path on the
+map) and `meta_inalcanzable` (goal inside an obstacle; reached the closest free cell).
+Verified once in Webots: ENTREGA_1 reached from the start (around the 8 m conveyor).
+Known: ENTREGA_3 from ENTREGA_1 returned `sin_ruta` — not investigated yet.
 
 ### Tasks and the command bridge
 
