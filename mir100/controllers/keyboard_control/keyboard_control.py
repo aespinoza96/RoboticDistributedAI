@@ -36,7 +36,10 @@ load_env_file()
 
 from puente import PuenteComandos  # noqa: E402  (mismo directorio del controlador)
 from lidar import distancias_por_sector  # noqa: E402
+import lidar  # noqa: E402
 import profundidad  # noqa: E402
+import mapa as mapa_mod  # noqa: E402
+import planificador  # noqa: E402
 
 # ===================================================
 # CONFIGURACION - AJUSTAR EN TU ESCENARIO
@@ -111,6 +114,21 @@ MANIOBRA_GIRO = 0.25
 MANIOBRA_TIEMPO_MAX = 30.0
 MANIOBRA_BLOQUEO_SEGUNDOS = 3.0    # Seguridad bloqueando la maniobra este tiempo = fallo.
 
+# Mapa de ocupacion + ruta A* (planificador.py): ir_a / ir_a_punto planifican la ruta
+# alrededor de lo conocido en vez de ir en linea recta y esquivar a ciegas.
+PLANIFICADOR_ACTIVO = os.getenv("MIR_PLANIFICADOR", "1") != "0"   # MIR_PLANIFICADOR=0 vuelve a la navegacion reactiva
+MAPA_CADA_N_PASOS = 3
+PLAN_VELOCIDAD = 0.30
+PLAN_OMEGA = 0.30
+# Siguiendo una ruta planificada (que ya guarda distancia a lo conocido), la seguridad
+# final usa margenes de choque, no de comodidad: si no, frena rutas validas en pasillos.
+PLAN_FRENTE_MIN = 0.35
+PLAN_DIAGONAL_MIN = 0.25
+PLAN_LADO_MIN = 0.12
+PLAN_GIRO_MIN = 0.25
+PLAN_LLEGADA_CERCA = 0.60          # la meta cae en un obstaculo: llegar a esto cuenta como exito
+
+MODE_PLAN = "PLAN"
 MODE_GOAL = "GOAL"
 MODE_AVOID_TURN = "AVOID_TURN"
 MODE_AVOID_FOLLOW = "AVOID_FOLLOW"
@@ -181,6 +199,19 @@ def forward_corridor_clear(scan):
     return scan["ok"] and scan["front"] >= SAFE_DISTANCE_FRONT and scan["front_left"] >= SAFE_DISTANCE_DIAGONAL and scan["front_right"] >= SAFE_DISTANCE_DIAGONAL and scan["left"] >= SAFE_DISTANCE_SIDE and scan["right"] >= SAFE_DISTANCE_SIDE
 
 
+def plan_forward_clear(scan):
+    return scan["ok"] and scan["front"] >= PLAN_FRENTE_MIN and scan["front_left"] >= PLAN_DIAGONAL_MIN \
+        and scan["front_right"] >= PLAN_DIAGONAL_MIN and scan["left"] >= PLAN_LADO_MIN and scan["right"] >= PLAN_LADO_MIN
+
+
+def plan_turn_clear(scan, direction):
+    if not scan["ok"]:
+        return False
+    if direction == "LEFT":
+        return scan["left"] >= PLAN_GIRO_MIN and scan["front_left"] >= PLAN_GIRO_MIN
+    return scan["right"] >= PLAN_GIRO_MIN and scan["front_right"] >= PLAN_GIRO_MIN
+
+
 def turn_clearance(scan, direction):
     # Una medida del costado no garantiza que el robot pueda girar: exigir tambien diagonal.
     if not scan["ok"]:
@@ -237,6 +268,12 @@ def heading_delta(previous_forward, forward):
     return math.atan2(float(np.dot(up, np.cross(previous_forward, forward))), float(np.dot(previous_forward, forward)))
 
 
+def robot_pose(node):
+    # (x, y, yaw rad) para el mapa; el planificador asume Z hacia arriba.
+    position = planar_position(node)
+    return float(position[0]), float(position[1]), math.radians(robot_yaw_degrees(node))
+
+
 def robot_yaw_degrees(node):
     forward = planar_forward(node)
     if WORLD_UP_AXIS == "Z":
@@ -287,6 +324,12 @@ elif PROFUNDIDAD_ACTIVA:
     print("ADVERTENCIA: no hay 'depth_camera'; solo LiDAR (no ve obstaculos por encima de su plano).")
 depth_sectors = {}
 depth_hits = []
+depth_points_xy = (np.zeros(0), np.zeros(0))
+occupancy_map = mapa_mod.Mapa()
+navigator = planificador.Navegador(occupancy_map, PLAN_VELOCIDAD, PLAN_OMEGA)
+if PLANIFICADOR_ACTIVO and WORLD_UP_AXIS != "Z":
+    print("ADVERTENCIA: el planificador asume Z hacia arriba; se usa la navegacion reactiva.")
+    PLANIFICADOR_ACTIVO = False
 depth_warned_at = -1e9
 depth_error_printed = False
 
@@ -379,6 +422,9 @@ def robot_context():
         "persona_detectada": person_detected,
         "obstaculos_altos": depth_hits,
     }
+    if navigation_active and mode == MODE_PLAN and navigator.ruta:
+        remaining = navigator.metros_restantes(robot_pose(robot_node))
+        context["ruta_planificada_m"] = round(remaining, 2) if remaining is not None else None
     if current_destination is not None:
         context["distancia_destino"] = round(goal_geometry(robot_node, current_destination)[0], 2)
     return context
@@ -408,6 +454,7 @@ def finish_task(state, reason, detail=""):
 
 def stop_navigation():
     global navigation_active, current_destination, current_destination_name, mode, manual_speed, manual_omega
+    navigator.detener()
     navigation_active = False
     current_destination = None
     current_destination_name = None
@@ -427,8 +474,11 @@ def start_navigation(name, target=None):
     current_destination = planar_position(destination_by_name[name]) if target is None else target
     current_destination_name = name
     navigation_active = True
-    mode = MODE_WAIT_PERSON if person_detected else MODE_GOAL
-    saved_mode = MODE_GOAL
+    base_mode = MODE_PLAN if PLANIFICADOR_ACTIVO else MODE_GOAL
+    mode = MODE_WAIT_PERSON if person_detected else base_mode
+    saved_mode = base_mode
+    if PLANIFICADOR_ACTIVO:
+        navigator.iniciar((float(current_destination[0]), float(current_destination[1])))
     avoid_attempts = 0
     manual_speed = 0.0
     manual_omega = 0.0
@@ -550,8 +600,10 @@ while robot.step(time_step) != -1:
             try:
                 depth_image = read_depth_image(depth_camera)
                 if depth_image is not None:
-                    depth_sectors = profundidad.holgura_por_sector(*profundidad.puntos_obstaculo(
-                        depth_image, depth_camera.getFov(), depth_camera.getMinRange(), depth_camera.getMaxRange()))
+                    px, py, pz = profundidad.puntos_obstaculo_xyz(
+                        depth_image, depth_camera.getFov(), depth_camera.getMinRange(), depth_camera.getMaxRange())
+                    depth_points_xy = (px, py)
+                    depth_sectors = profundidad.holgura_por_sector(*profundidad.holguras_de_puntos(px, py, pz))
             except Exception as error:
                 depth_sectors = {}
                 if not depth_error_printed:
@@ -562,6 +614,17 @@ while robot.step(time_step) != -1:
             depth_warned_at = robot.getTime()
             emit("obstaculo_alto", {"tarea_id": task["tarea_id"], "sectores": depth_hits,
                                     "detalle": "La camara de profundidad ve un obstaculo por encima del plano del LiDAR (por ejemplo una mesa)."})
+    # El mapa se construye siempre (tambien sin tarea): es la memoria del entorno.
+    if step_counter % MAPA_CADA_N_PASOS == 0:
+        try:
+            pose = robot_pose(robot_node)
+            for lidar_device, first_angle, position in ((front_lidar, lidar.PRIMER_ANGULO_FRONTAL, lidar.POSICION_FRONTAL),
+                                                        (back_lidar, lidar.PRIMER_ANGULO_TRASERO, lidar.POSICION_TRASERO)):
+                occupancy_map.actualizar_lidar(pose, lidar_device.getLayerRangeImage(0), first_angle, position,
+                                               lidar_device.getMaxRange(), math.degrees(lidar_device.getFov()))
+            occupancy_map.actualizar_alto(pose, *depth_points_xy)
+        except Exception as error:
+            print("ERROR MAPA: {}".format(error))
     left_distance = scan["left"]
     front_left_distance = scan["front_left"]
     front_distance = scan["front"]
@@ -684,6 +747,23 @@ while robot.step(time_step) != -1:
                 stop_navigation()
             if step_counter % LOG_EVERY_STEPS == 0:
                 print("SEGURIDAD: LiDAR sin lecturas suficientes, STOP")
+        elif mode == MODE_PLAN:
+            target_speed, target_omega, plan_result = navigator.paso(robot_pose(robot_node), now)
+            if plan_result == planificador.LLEGO:
+                if distance <= PLAN_LLEGADA_CERCA:
+                    print("\nDESTINO ALCANZADO (ruta): {} | Distancia {:.2f} m".format(current_destination_name, distance))
+                    finish_task("exito", "llego", "Llego a {} por ruta planificada (a {:.2f} m)".format(current_destination_name, distance))
+                else:
+                    finish_task("fallo", "meta_inalcanzable", "La meta {} esta dentro de un obstaculo segun el mapa; el robot llego lo mas cerca posible (a {:.2f} m)".format(
+                        current_destination_name, distance))
+                stop_navigation()
+                target_speed = target_omega = 0.0
+            elif plan_result == planificador.SIN_RUTA:
+                print("SIN RUTA A {}".format(current_destination_name))
+                finish_task("fallo", "sin_ruta", "El mapa no tiene ningun camino libre hacia {} (distancia {:.2f} m): todo lo conocido alrededor esta bloqueado | {}".format(
+                    current_destination_name, distance, scan_text(scan)))
+                stop_navigation()
+                target_speed = target_omega = 0.0
         elif mode == MODE_GOAL:
             # Girar hacia destino sin avanzar hasta que este orientado.
             if abs(goal_angle) > NAVIGATION_ANGLE_TOLERANCE:
@@ -793,16 +873,20 @@ while robot.step(time_step) != -1:
         target_speed = 0.0
         target_omega = 0.0
         safety_block = "lidar_sin_datos"
-    if target_speed > 0.0 and not forward_corridor_clear(scan):
+    planned = navigation_active and mode == MODE_PLAN
+    if target_speed > 0.0 and not (plan_forward_clear(scan) if planned else forward_corridor_clear(scan)):
         target_speed = 0.0
-        target_omega = 0.0
+        if not planned:
+            target_omega = 0.0  # en ruta planificada se puede seguir girando hacia la ruta
         safety_block = "corredor_frontal_ocupado"
+        if planned:
+            navigator.replanificar_ya()
         if step_counter % LOG_EVERY_STEPS == 0:
             print("SEGURIDAD CORREDOR: {} | STOP".format(scan_text(scan)))
     # Precaucion con rotaciones junto a maquinaria cercana.
     if abs(target_omega) > 0.0 and target_speed == 0.0:
         turn_direction = "LEFT" if target_omega > 0 else "RIGHT"
-        if not turn_clearance(scan, turn_direction):
+        if not (plan_turn_clear(scan, turn_direction) if planned else turn_clearance(scan, turn_direction)):
             target_omega = 0.0
             safety_block = "sin_espacio_para_girar_" + ("izquierda" if turn_direction == "LEFT" else "derecha")
             if step_counter % LOG_EVERY_STEPS == 0:

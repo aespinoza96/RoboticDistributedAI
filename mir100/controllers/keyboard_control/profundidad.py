@@ -18,7 +18,7 @@ import numpy as np
 import lidar
 
 POSICION_CAMARA = (0.464, 0.0, 0.18)   # m, marco del robot (de Mir100.proto)
-ALTURA_SUELO = 0.05                    # por debajo: suelo, no obstaculo
+ALTURA_SUELO = 0.10                    # por debajo: suelo (y las marcas de entrega de 7 cm, que se pisan)
 ALTURA_ROBOT = 1.00                    # MiR100 + Robotino + cinta: margen conservador
 SALTO_PIXELES = 6                      # submuestreo: 1280x720 -> ~214x120 puntos
 PUNTOS_MINIMOS = 3                     # un sector necesita al menos estos puntos
@@ -26,9 +26,8 @@ MARGEN_AVISO = 0.15                    # m: cuanto mas cerca que el LiDAR para r
 PROFUNDIDAD_PLANA = True               # Webots RangeFinder: distancia al plano de la camara (verificado en Webots)
 
 
-def puntos_obstaculo(imagen, fov_horizontal, rango_minimo, rango_maximo, salto=SALTO_PIXELES, plana=PROFUNDIDAD_PLANA):
-    """imagen: array alto x ancho de distancias (m). Devuelve (angulos_grados, holguras_m, alturas_m)
-    solo de los puntos que el robot podria chocar."""
+def puntos_obstaculo_xyz(imagen, fov_horizontal, rango_minimo, rango_maximo, salto=SALTO_PIXELES, plana=PROFUNDIDAD_PLANA):
+    """Puntos (x, y, z) en el marco del robot que el robot podria chocar."""
     d = np.asarray(imagen, dtype=float)[::salto, ::salto]
     alto_original = np.asarray(imagen).shape[0]
     ancho_original = np.asarray(imagen).shape[1]
@@ -47,10 +46,20 @@ def puntos_obstaculo(imagen, fov_horizontal, rango_minimo, rango_maximo, salto=S
     y = POSICION_CAMARA[1] - du * adelante
     z = POSICION_CAMARA[2] - dv * adelante
     obstaculo = validos & (z > ALTURA_SUELO) & (z < ALTURA_ROBOT)
-    x, y, z = x[obstaculo], y[obstaculo], z[obstaculo]
+    return x[obstaculo], y[obstaculo], z[obstaculo]
+
+
+def holguras_de_puntos(x, y, z):
+    """(angulos_grados, holguras_m, alturas_m) de puntos en el marco del robot."""
     holgura = np.hypot(np.maximum(np.abs(x) - lidar.MEDIO_LARGO, 0.0), np.maximum(np.abs(y) - lidar.MEDIO_ANCHO, 0.0))
     holgura = np.maximum(holgura, 0.01)
     return np.degrees(np.arctan2(y, x)), holgura, z
+
+
+def puntos_obstaculo(imagen, fov_horizontal, rango_minimo, rango_maximo, salto=SALTO_PIXELES, plana=PROFUNDIDAD_PLANA):
+    """imagen: array alto x ancho de distancias (m). Devuelve (angulos_grados, holguras_m, alturas_m)
+    solo de los puntos que el robot podria chocar."""
+    return holguras_de_puntos(*puntos_obstaculo_xyz(imagen, fov_horizontal, rango_minimo, rango_maximo, salto, plana))
 
 
 def holgura_por_sector(angulos, holguras, alturas):
