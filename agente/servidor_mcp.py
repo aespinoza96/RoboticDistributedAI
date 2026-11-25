@@ -61,6 +61,14 @@ async def escanear_entorno() -> dict:
 
 
 @servidor.tool()
+async def distancia_por_ruta(destino: str) -> dict:
+    """Cuantos metros de ruta faltan hasta un destino segun el mapa que el robot fue
+    armando (A*, rodeando lo conocido), la distancia en linea recta y cuanto mapa conoce
+    (m2). hay_ruta=false si con lo conocido no hay camino. No mueve el robot."""
+    return await _en_hilo(herramientas.distancia_por_ruta, destino)
+
+
+@servidor.tool()
 async def ir_a(destino: str, esperar: bool = True, timeout_s: float = 300.0) -> dict:
     """Navega a un destino de entrega ("ENTREGA_3", "entrega 3" o "3"). El robot gira hacia
     el destino, avanza y esquiva obstaculos solo. Con esperar=true devuelve el resultado

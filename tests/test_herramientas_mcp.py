@@ -35,6 +35,9 @@ class RobotSimulado:
         self.pendientes = []  # (instante_real, evento, datos)
         self.ordenes = []
         self.posicion = [3.36, 4.95]
+        self.motivo_e3 = "evasion_sin_salida"
+        # (metros_por_ruta o None, mapa_conocido_m2) para el comando "ruta"; por defecto linea recta.
+        self.ruta_fn = lambda pos, meta: (((pos[0] - meta[0]) ** 2 + (pos[1] - meta[1]) ** 2) ** 0.5, 50.0)
         self.activo = True
         self.hilo = threading.Thread(target=self._bucle, daemon=True)
         self.hilo.start()
@@ -62,6 +65,11 @@ class RobotSimulado:
         responder = lambda ok, r=None, e=None: self.puente.responder(cliente, mensaje.get("id"), ok, r, e)  # noqa: E731
         if cmd == "estado":
             responder(True, {"contexto": {"posicion": list(self.posicion)}, "tarea": self.tarea, "ultima_tarea": self.ultima})
+        elif cmd == "ruta":
+            meta = {"ENTREGA_2": (3.76, 4.31), "ENTREGA_3": (-3.61, 4.31)}[args["destino"]]
+            metros, conocido = self.ruta_fn(self.posicion, meta)
+            responder(True, {"destino": args["destino"], "hay_ruta": metros is not None, "metros_por_ruta": metros,
+                             "metros_en_linea_recta": 0.0, "mapa_conocido_m2": conocido})
         elif cmd == "destinos":
             responder(True, {"destinos": [{"nombre": "ENTREGA_2", "posicion": [3.76, 4.31], "distancia": 0.76},
                                           {"nombre": "ENTREGA_3", "posicion": [-3.61, 4.31], "distancia": 7.0}]})
@@ -84,7 +92,7 @@ class RobotSimulado:
             self._programar(0, "tarea_iniciada", dict(self.tarea))
             if cmd == "ir_a" and args["destino"] == "ENTREGA_3":
                 self._programar(0.05, "evasion_iniciada", {"tarea_id": tid, "direccion": "RIGHT", "intento": 1})
-                self._programar(0.15, "tarea_terminada", dict(self.tarea, estado="fallo", motivo="evasion_sin_salida",
+                self._programar(0.15, "tarea_terminada", dict(self.tarea, estado="fallo", motivo=self.motivo_e3,
                                                                detalle="sin salida", fin=self.t + 45,
                                                                contexto={"modo": "AVOID_TURN", "posicion": list(self.posicion)}))
             elif cmd == "ir_a_punto":
@@ -186,8 +194,9 @@ class TestServidorMCP(unittest.TestCase):
                 return nombres, resultado
 
         nombres, resultado = asyncio.run(flujo())
-        self.assertEqual(nombres, ["avanzar", "escanear_entorno", "esperar_tarea", "estado_robot",
+        self.assertEqual(nombres, ["avanzar", "distancia_por_ruta", "escanear_entorno", "esperar_tarea", "estado_robot",
                                    "girar", "ir_a", "ir_a_punto", "listar_destinos", "parar"])
+
         self.assertFalse(resultado.is_error)
         datos = resultado.structured_content or json.loads(resultado.content[0].text)
         datos = datos.get("result", datos)

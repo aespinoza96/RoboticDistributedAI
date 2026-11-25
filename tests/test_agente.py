@@ -156,7 +156,41 @@ class TestAgente(unittest.TestCase):
         self.assertFalse(mision.sin_progreso())
         self.assertLess(mision.mejor_distancia, 2.0)
         texto = agente.texto_de_resultado(cliente.runner.resultados[-1][1])
-        self.assertIn("Progreso: a", texto)
+        self.assertIn("Progreso: ruta de", texto)
+
+    def test_desvio_que_acorta_la_ruta_no_cuenta_como_intento(self):
+        # En linea recta se aleja (rodeo), pero la ruta por el mapa se acorta cada vez.
+        rutas = iter([20.0, 19.0, 17.5, 16.0, 14.0, 12.5, 11.0, 9.0, 8.0, 7.0])
+        self.robot.ruta_fn = lambda pos, meta: (next(rutas), 50.0)
+        guion = [
+            [bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, 1)],
+            [bloque_herramienta("ir_a_punto", {"x": 8.0, "y": 4.0}, 2)],
+            [bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, 3)],
+            [bloque_herramienta("ir_a_punto", {"x": 8.5, "y": 0.0}, 4)],
+            [bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, 5)],
+            [bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, 6)],
+        ]
+        mision, cliente = self.correr(guion, max_movimientos=30)
+        self.assertEqual(mision.movimientos, 6)
+        self.assertEqual(mision.intentos_sin_progreso, 0)
+        self.assertIn("ruta de", agente.texto_de_resultado(cliente.runner.resultados[-1][1]))
+
+    def test_descubrir_mapa_cuenta_como_avance(self):
+        conocido = iter(range(50, 500, 10))
+        self.robot.ruta_fn = lambda pos, meta: (15.0, float(next(conocido)))
+        guion = [[bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, n)] for n in range(6)]
+        mision, _ = self.correr(guion, max_movimientos=30)
+        self.assertEqual(mision.movimientos, 6)
+        self.assertFalse(mision.sin_progreso())
+
+    def test_sin_ruta_no_cuenta_como_intento(self):
+        self.robot.motivo_e3 = "sin_ruta"
+        self.robot.ruta_fn = lambda pos, meta: (None, 50.0)
+        guion = [[bloque_herramienta("ir_a", {"destino": "ENTREGA_3"}, n)] for n in range(5)]
+        mision, cliente = self.correr(guion, max_movimientos=30)
+        self.assertEqual(mision.movimientos, 5)
+        self.assertEqual(mision.intentos_sin_progreso, 0)
+        self.assertIn("SIN RUTA", agente.texto_de_resultado(cliente.runner.resultados[-1][1]))
 
     def test_limite_de_movimientos(self):
         guion = [[bloque_herramienta("girar", {"grados": 10}, n)] for n in range(4)]

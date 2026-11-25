@@ -86,6 +86,17 @@ class TestMapa(unittest.TestCase):
             m.actualizar_lidar((0.0, 0.0, 0.0), libres, lidar.PRIMER_ANGULO_FRONTAL, lidar.POSICION_FRONTAL, 30.0)
         self.assertTrue(m.ocupado()[m.celda(1.5, 0.0)])
 
+    def test_impacto_lejano_no_marca_ocupado(self):
+        m = mapa.Mapa()
+        rangos = [float("inf")] * RAYOS
+        i = int(round((0.0 - lidar.PRIMER_ANGULO_FRONTAL) / (lidar.FOV_GRADOS / (RAYOS - 1))))
+        rangos[i] = 5.5                                           # un punto suelto a 5.5 m
+        for _ in range(5):
+            m.actualizar_lidar((0.0, 0.0, 0.0), rangos, lidar.PRIMER_ANGULO_FRONTAL, lidar.POSICION_FRONTAL, 30.0)
+        x = lidar.POSICION_FRONTAL[0] + 5.5
+        self.assertFalse(m.ocupado()[m.celda(x, lidar.POSICION_FRONTAL[1])])
+        self.assertLess(m.log_odds[m.celda(3.0, lidar.POSICION_FRONTAL[1])], 0)  # el tramo previo si queda libre
+
     def test_pose_girada(self):
         m = mapa.Mapa()
         m.actualizar_alto((2.0, 1.0, math.pi / 2), np.full(5, 1.0), np.zeros(5))  # 1 m adelante, mirando a +y

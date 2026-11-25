@@ -421,6 +421,7 @@ def robot_context():
         "lidar_ok": scan["ok"],
         "persona_detectada": person_detected,
         "obstaculos_altos": depth_hits,
+        "mapa_conocido_m2": known_map_m2(),
     }
     if navigation_active and mode == MODE_PLAN and navigator.ruta:
         remaining = navigator.metros_restantes(robot_pose(robot_node))
@@ -487,6 +488,22 @@ def start_navigation(name, target=None):
     print("\nINICIANDO RUTA: {}".format(name))
 
 
+def route_length(target):
+    """Metros de ruta A* desde la pose actual hasta target (x, y) con el mapa actual, o None."""
+    probe = planificador.Navegador(occupancy_map, PLAN_VELOCIDAD, PLAN_OMEGA)
+    probe.iniciar(target)
+    pose = robot_pose(robot_node)
+    cells = probe.planificar(pose)
+    if cells is None:
+        return None
+    points = [(pose[0], pose[1])] + [occupancy_map.centro(f, c) for f, c in cells]
+    return float(sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])))
+
+
+def known_map_m2():
+    return round(float(np.count_nonzero(occupancy_map.conocido())) * occupancy_map.resolucion ** 2, 1)
+
+
 def start_maneuver(kind, amount):
     global maneuver, manual_speed, manual_omega
     stop_navigation()
@@ -527,6 +544,15 @@ def handle_command(client, message):
                 "nota": "Holgura en metros desde el borde del robot; 0.0 = sin lecturas validas (se trata como bloqueado). "
                         "Combina LiDAR (plano a 0.19 m) y camara de profundidad (al frente, hasta 1.95 m); "
                         "obstaculos_altos = sectores donde la profundidad vio algo mas cerca que el LiDAR (p. ej. una mesa)."})
+        elif cmd == "volcar_mapa":
+            # Diagnostico: guarda las capas del mapa (.npz) para ver que bloquea las rutas.
+            path = str(args.get("ruta", ""))
+            if not path.endswith(".npz"):
+                fail("'ruta' debe terminar en .npz")
+                return
+            np.savez(path, log_odds=occupancy_map.log_odds, alto=occupancy_map.alto, ocupado=occupancy_map.ocupado(),
+                     origen=np.array([occupancy_map.x_min, occupancy_map.y_min]), resolucion=occupancy_map.resolucion)
+            ok({"ruta": path, "contexto": robot_context()})
         elif cmd == "volcar_profundidad":
             # Diagnostico: guarda la imagen de profundidad cruda (.npy) para calibrar.
             if depth_camera is None:
@@ -550,6 +576,24 @@ def handle_command(client, message):
             task_id = start_task("ir_a", {"destino": name}, "puente")
             start_navigation(name)
             ok({"tarea_id": task_id, "destino": name})
+        elif cmd == "ruta":
+            # Distancia por ruta (A* sobre el mapa actual) hasta un destino o un punto, sin moverse.
+            if "destino" in args:
+                name = normalize_destination(args.get("destino", ""), destination_by_name)
+                if name is None:
+                    fail("Destino desconocido '{}'. Disponibles: {}".format(args.get("destino"), ", ".join(sorted(destination_by_name))))
+                    return
+                goal = planar_position(destination_by_name[name])
+                label = name
+            else:
+                goal = np.array([float(args.get("x")), float(args.get("y")), 0.0])
+                label = "PUNTO({:.2f}, {:.2f})".format(goal[0], goal[1])
+            here = planar_position(robot_node)
+            meters = route_length((float(goal[0]), float(goal[1])))
+            ok({"destino": label, "hay_ruta": meters is not None,
+                "metros_por_ruta": None if meters is None else round(meters, 2),
+                "metros_en_linea_recta": round(float(np.linalg.norm(goal - here)), 2),
+                "mapa_conocido_m2": known_map_m2()})
         elif cmd == "ir_a_punto":
             # Punto intermedio (waypoint) en coordenadas del mundo, para rodear obstaculos.
             x, y = float(args.get("x")), float(args.get("y"))
@@ -579,7 +623,7 @@ def handle_command(client, message):
             maneuver = None
             ok({"detenido": True, "habia_tarea": had_task})
         else:
-            fail("Comando desconocido '{}'. Comandos: estado, destinos, escanear, ir_a, ir_a_punto, girar, avanzar, parar, volcar_profundidad".format(cmd))
+            fail("Comando desconocido '{}'. Comandos: estado, destinos, escanear, ruta, ir_a, ir_a_punto, girar, avanzar, parar, volcar_profundidad".format(cmd))
     except (TypeError, ValueError) as error:
         fail("Argumentos invalidos para '{}': {}".format(cmd, error))
 

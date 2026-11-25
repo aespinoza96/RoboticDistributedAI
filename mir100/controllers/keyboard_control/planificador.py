@@ -16,6 +16,7 @@ import numpy as np
 import mapa as mapa_mod
 
 INFLADO = 0.55                 # m, centro del robot a obstaculo (medio ancho 0.29 + 0.26)
+INFLADO_MINIMO = 0.38          # m: si no hay ruta con INFLADO, se reintenta con esto (pasillos angostos)
 INFLADO_BLANDO = 0.95          # m, zona con costo extra
 COSTO_BLANDO = 4.0
 RADIO_AJUSTE_META = 1.5        # m: si la meta cae en un obstaculo, la celda libre mas cercana
@@ -110,6 +111,7 @@ class Navegador:
         self.velocidad_max = velocidad_max
         self.omega_max = omega_max
         self.inflado = int(math.ceil(INFLADO / mapa.resolucion))
+        self.inflado_minimo = int(math.ceil(INFLADO_MINIMO / mapa.resolucion))
         self.inflado_blando = int(math.ceil(INFLADO_BLANDO / mapa.resolucion))
         self.ajuste_meta = int(math.ceil(RADIO_AJUSTE_META / mapa.resolucion))
         self.activo = False
@@ -132,21 +134,26 @@ class Navegador:
         self.ruta_celdas = None
 
     def planificar(self, pose):
+        """Ruta con margen normal; si no hay, con margen minimo (pasillos angostos)."""
         ocupado = self.mapa.ocupado()
-        bloqueado = mapa_mod.dilatar(ocupado, self.inflado)
-        blando = mapa_mod.dilatar(ocupado, self.inflado_blando) & ~bloqueado
         inicio = self.mapa.celda(pose[0], pose[1])
-        meta = self.mapa.celda(*self.meta)
-        if not self.mapa.dentro(*inicio) or not self.mapa.dentro(*meta):
+        meta_celda = self.mapa.celda(*self.meta)
+        if not self.mapa.dentro(*inicio) or not self.mapa.dentro(*meta_celda):
             return None
-        # El robot puede estar pegado a un obstaculo: liberar su entorno (nunca lo ocupado).
-        f0, f1 = max(0, inicio[0] - self.inflado), min(self.mapa.filas, inicio[0] + self.inflado + 1)
-        c0, c1 = max(0, inicio[1] - self.inflado), min(self.mapa.columnas, inicio[1] + self.inflado + 1)
-        bloqueado[f0:f1, c0:c1] &= ocupado[f0:f1, c0:c1]
-        meta = libre_mas_cercana(bloqueado, meta, self.ajuste_meta)
-        if meta is None:
-            return None
-        return astar(bloqueado, inicio, meta, blando.astype(np.float32) * COSTO_BLANDO)
+        for inflado in (self.inflado, self.inflado_minimo):
+            bloqueado = mapa_mod.dilatar(ocupado, inflado)
+            blando = mapa_mod.dilatar(ocupado, self.inflado_blando) & ~bloqueado
+            # El robot puede estar pegado a un obstaculo: liberar su entorno (nunca lo ocupado).
+            f0, f1 = max(0, inicio[0] - inflado), min(self.mapa.filas, inicio[0] + inflado + 1)
+            c0, c1 = max(0, inicio[1] - inflado), min(self.mapa.columnas, inicio[1] + inflado + 1)
+            bloqueado[f0:f1, c0:c1] &= ocupado[f0:f1, c0:c1]
+            meta = libre_mas_cercana(bloqueado, meta_celda, self.ajuste_meta)
+            if meta is None:
+                continue
+            ruta = astar(bloqueado, inicio, meta, blando.astype(np.float32) * COSTO_BLANDO)
+            if ruta is not None:
+                return ruta
+        return None
 
     def metros_restantes(self, pose):
         if not self.ruta:
