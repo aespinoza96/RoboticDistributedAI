@@ -1,1311 +1,817 @@
+# MiR100 - Webots: memoria espacial real con LiDAR, A*, YOLO y Jev opcional.
+# MODO 1: pulsa M y recorre manualmente los pasillos para aprenderlos.
+# MODO 2: pulsa 1, 2 o 3 para planificar por espacio realmente observado.
+# Z es vertical; XY es el suelo. Cambiar orientaciones del LiDAR solo despues de calibrarlas.
 from controller import Supervisor, Keyboard
 from ultralytics import YOLO
+from memoria_espacial import MemoriaEspacial
 import numpy as np
 import cv2
 import math
 import os
-import traceback
+import time
+import threading
+import queue
 
+try:
+    from typesafe_sdk import TypeSafeClient, Choice
+    JEV_AVAILABLE = True
+except ImportError:
+    JEV_AVAILABLE = False
 
-def load_env_file():
-    # Busca un .env subiendo desde este archivo (raiz del repo) y carga sus
-    # variables sin sobrescribir las que ya existan en el entorno.
-    directory = os.path.dirname(os.path.abspath(__file__))
-    while True:
-        path = os.path.join(directory, ".env")
-        if os.path.isfile(path):
-            with open(path, encoding="utf-8") as env_file:
-                for line in env_file:
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    name, value = line.split("=", 1)
-                    name = name.strip()
-                    if name.startswith("export "):
-                        name = name[len("export "):].strip()
-                    value = value.strip().strip('"').strip("'")
-                    if name and value and name not in os.environ:
-                        os.environ[name] = value
-            return path
-        parent = os.path.dirname(directory)
-        if parent == directory:
-            return None
-        directory = parent
-
-
-load_env_file()
-
-from puente import PuenteComandos  # noqa: E402  (mismo directorio del controlador)
-from lidar import distancias_por_sector  # noqa: E402
-import lidar  # noqa: E402
-import profundidad  # noqa: E402
-import mapa as mapa_mod  # noqa: E402
-import planificador  # noqa: E402
-import personas  # noqa: E402
-import avisos  # noqa: E402
-
-# ===================================================
-# CONFIGURACION - AJUSTAR EN TU ESCENARIO
-# ===================================================
 WHEEL_RADIUS = 0.0625
 DISTANCE_TO_CENTER = 0.2226
-SPEED_MAX = 0.95
-SPEED_MIN = -0.30
-ANGULAR_SPEED_MAX = 0.30
-SPEED_INCREMENT = 0.05
-ANGULAR_SPEED_INCREMENT = 0.05
-
-WORLD_UP_AXIS = "Z"                 # Tu mundo parece usar Z como vertical.
-ROBOT_FORWARD_AXIS = "+X"          # Verificar que +X sea el frente real del MiR100.
-TURN_SIGN = 1.0                    # Cambiar a -1.0 SOLO si el robot gira al reves.
-LIDAR_SWAP_SIDES = False           # Cambiar a True SOLO si izq/der del LiDAR estan invertidas.
-
-DESTINATIONS = {ord("1"): "ENTREGA_1", ord("2"): "ENTREGA_2", ord("3"): "ENTREGA_3"}
-ARRIVAL_DISTANCE = 0.30
-NAVIGATION_SPEED = 0.23
-NAVIGATION_TURN_SPEED = 0.25
-NAVIGATION_ANGLE_TOLERANCE = 0.12
-
-# Distancias en metros. Deben validarse segun el ancho real del robot y su entorno.
-SAFE_DISTANCE_FRONT = 1.00
-SAFE_DISTANCE_BACK = 0.80
-FRONT_CLEAR_DISTANCE = 1.35
-SIDE_MIN_DISTANCE = 0.65
-SIDE_DESIRED_DISTANCE = 0.90
-SIDE_KP = 0.32
-AVOID_FORWARD_SPEED = 0.13
-AVOID_TURN_SPEED = 0.25
-AVOID_MIN_TRAVEL = 1.00            # Distancia minima recorrida antes de volver a apuntar al destino.
-AVOID_MAX_SECONDS = 25.0          # No insistir indefinidamente ante una ruta bloqueada.
-AVOID_HEADING_TOLERANCE = 0.30
-MAX_AVOID_ATTEMPTS = 8
-
-YOLO_MODEL = "yolo11n.pt"
+NAVIGATION_SPEED = 0.16
+MANUAL_SPEED_MAX = 0.22
+REVERSE_SPEED_MAX = 0.10
+ANGULAR_SPEED_MAX = 0.25
+SAFE_FRONT = 0.85
+SAFE_DIAGONAL = 0.72
+SAFE_SIDE = 0.52
+SAFE_REAR = 0.80
+SAFE_ROTATION = 0.64
+# Geometria conservadora del MiR100; ajustar tras validar dimensiones en Webots.
+FOOTPRINT_RADIUS = 0.46
+FOOTPRINT_MARGIN = 0.10
+ROTATION_RADIUS = 0.59
+PATH_LOOKAHEAD = 0.88
+REVERSE_LOOKAHEAD = 0.65
+LIDAR_MIN_VALID_FRACTION = 0.65
+MAP_VIEW_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'factory_map_debug.png')
+ARRIVAL_DISTANCE = 0.40
+WAYPOINT_DISTANCE = 0.28
+MAP_RESOLUTION = 0.20
+MAP_ROBOT_RADIUS = 0.52  # Radio conservador + margen: ajustar a la huella real.
+MAP_BOUNDS = (-9.0, -9.0, 9.0, 9.0)
+MAPPING_EVERY_STEPS = 6
+PLANNING_MIN_INTERVAL = 2.0
+REPLAN_MAX_ATTEMPTS = 4
+REPLAN_BLOCKED_STEPS = 22
+TEMP_BLOCK_RADIUS = 0.28
+TEMP_BLOCK_SECONDS = 30.0
+REPLAN_MIN_PROGRESS = 0.18
+REPLAN_OBSTACLE_SAME_DISTANCE = 0.22
+PATH_START_MAX_DISTANCE = 0.55
+TURN_BLOCKED_MAX_STEPS = 20
+# Recuperacion de giro bloqueado: retroceso corto SOLO con el LiDAR valido y pasillo posterior despejado.
+RECOVERY_MAX_ATTEMPTS = 2
+RECOVERY_REVERSE_DISTANCE = 0.28
+RECOVERY_REVERSE_SPEED = 0.075
+RECOVERY_MAX_SECONDS = 7.0
+RECOVERY_REAR_MIN = 1.00
+RECOVERY_FORWARD_MIN = 1.00
+RECOVERY_FORWARD_DISTANCE = 0.22
+RECOVERY_REQUIRED_MOVEMENT = 0.07
+RECOVERY_CLEAR_TURN_STEPS = 4
+ROUTE_LOG_MAX_POINTS = 12
+FINAL_APPROACH_DISTANCE = 0.85
+SAVE_EVERY_SIM_SECONDS = 25.0
 YOLO_CONFIDENCE = 0.55
-# Personas: detector dedicado (construir_detector_personas.py). Medido sobre 39 imagenes del
-# peaton de Webots (frente, perfil y espalda, 1.3-3.8 m): YOLO11n 4/39, YOLO-World 14/39,
-# YOLO26s 17/39, YOLOE-26s "person" 23/39 con umbral 0.15. De cerca la camara solo ve piernas
-# y ninguno detecta bien: eso lo cubre la memoria de personas (remembered_people).
-# Se usa el primero que exista; si no hay ninguno, YOLO11n con umbral bajo.
-DETECTORES_PERSONAS = (("yoloe_personas.pt", 0.15), ("yolo_personas.pt", 0.25))
-YOLO_CONFIANZA_PERSONA_YOLO11 = 0.35
-PERSONA_PROPORCION_MIN = 1.3
-YOLO_EVERY_N_STEPS = 3
-PERSON_CLEAR_DETECTIONS = 5       # 5 inferencias seguidas sin persona bloqueando antes de reanudar.
-# Personas: pasar con cuidado. Frenar solo si esta DELANTE y cerca; si no, ir despacio y rodearla.
-PERSONA_PARADA_M = 1.00           # PRIORIDAD: persona a esta holgura o menos = el robot se detiene, avisa y espera
-PERSONA_PARADA_FRENTE_M = 1.50    # de FRENTE (+-PERSONA_ANGULO_FRENTE) frena antes: si no, el planificador
-                                  # esquiva las piernas (que el LiDAR pone en el mapa) antes de llegar a 1 m
-PERSONA_ESPERA_S = 60.0           # segundos (de simulacion) que espera antes de retomar la tarea
-VERSION_CONTROLADOR = "2026-11-24 personas: YOLOE, parada 1.0 m (1.5 m de frente), luz amarilla y voz, sigue cuando se aparta"
-PERSONA_REARME_M = 1.30           # la parada se rearma cuando la persona se aleja mas que esto (o deja de verse)
-PERSONA_LIBRE_S = 2.0             # sin rastro de la persona este tiempo (camara y LiDAR) = se fue: continuar
-PERSONA_RASTRO_M = 0.45           # ecos del LiDAR a menos de esto de donde estaba = sigue ahi (sus piernas)
-PERSONA_REPETIR_AVISO_S = 20.0    # cada cuanto repite "por favor, muevase" mientras espera
-FRASE_PEDIR_PASO = "Hola. Por favor, muévase del camino para que pueda continuar."
-FRASE_REPETIR = "Por favor, muévase del camino."
-FRASE_GRACIAS = "Gracias. Continúo."
-FRASE_NO_PUEDO = "No puedo continuar. Espero instrucciones."
-PERSONA_ANGULO_FRENTE = 35.0      # grados a cada lado que cuentan como "delante"
-PERSONA_LENTO_M = 2.0             # mas cerca que esto: velocidad reducida
-PERSONA_VELOCIDAD = 0.12          # m/s cerca de personas
-PERSONA_ZONA_RADIO = 1.0          # m: zona que la ruta evita (el seguimiento recorta ~0.05-0.1 m en curvas)
-PERSONA_MEMORIA_S = 3.0           # s que una zona de "rodear" sigue tras dejar de verse
-PERSONA_RECUERDO_S = 10.0         # s que una persona cuenta para la PARADA aunque ya no este en camara
-PERSONA_FUSION_M = 0.8            # detecciones a menos de esto son la misma persona
-# Opciones por orden (ir_a, ir_a_punto, girar, avanzar): ver parse_task_options.
-OPCIONES_AL_VER_PERSONA = ("continuar", "rodear", "detenerse", "esperar")   # defecto: continuar
-DISTANCIA_PERSONA_DEFECTO = 3.0   # m de holgura para "detenerse" / "esperar"
-VELOCIDAD_MIN, VELOCIDAD_MAX_ORDEN = 0.05, 0.40
-LOG_EVERY_STEPS = 30
-
-# Camara de profundidad: obstaculos por encima del plano del LiDAR (mesas, cintas).
-PROFUNDIDAD_ACTIVA = os.getenv("MIR_PROFUNDIDAD", "1") != "0"   # MIR_PROFUNDIDAD=0 la apaga (comparaciones A/B)
-PROFUNDIDAD_CADA_N_PASOS = 2       # se procesa cada N pasos; la ultima lectura se reutiliza
-OBSTACULO_ALTO_AVISO_SEGUNDOS = 10.0
-
-SAFE_DISTANCE_SIDE = 0.60      # Margen inicial conservador; calibrar para el robot.
-SAFE_DISTANCE_DIAGONAL = 0.95  # No atravesar esquinas de maquinaria.
-TURN_CLEARANCE_MIN = 0.65      # Distancia lateral minima para permitir una rotacion.
-LIDAR_UNKNOWN_IS_BLOCKED = True
-LOG_SECTOR_INTERVAL = 30
-
-# Puente de comandos (agente / MCP): TCP local, JSON por linea. Ver puente.py.
-PUENTE_ACTIVO = True
-PUENTE_PUERTO = int(os.getenv("MIR_PUENTE_PUERTO", "5555"))
-
-# Vigilancia de tareas: convierte bloqueos silenciosos en fallos con motivo.
-SIN_PROGRESO_SEGUNDOS = 20.0       # Navegando sin moverse SIN_PROGRESO_DISTANCIA en este tiempo = fallo.
-BLOQUEO_NAVEGACION_SEGUNDOS = 5.0  # La seguridad frenando la navegacion este tiempo = fallo con la regla exacta.
-PUNTO_MAX_COORDENADA = 50.0        # ir_a_punto: limite de cordura para x e y (m).
-SIN_PROGRESO_DISTANCIA = 0.10
-LIDAR_SIN_DATOS_SEGUNDOS = 10.0    # LiDAR sin lecturas suficientes durante una tarea = fallo.
-PERSONA_BLOQUEANDO_SEGUNDOS = 15.0 # Aviso (no fallo) si una persona frena la tarea tanto tiempo.
-
-# Maniobras cortas pedidas por el agente; la capa de seguridad sigue aplicando.
-MANIOBRA_MAX_GRADOS = 180.0
-MANIOBRA_MAX_METROS = 1.0
-MANIOBRA_VELOCIDAD = 0.12
-MANIOBRA_GIRO = 0.25
-MANIOBRA_TIEMPO_MAX = 30.0
-MANIOBRA_BLOQUEO_SEGUNDOS = 3.0    # Seguridad bloqueando la maniobra este tiempo = fallo.
-
-# Mapa de ocupacion + ruta A* (planificador.py): ir_a / ir_a_punto planifican la ruta
-# alrededor de lo conocido en vez de ir en linea recta y esquivar a ciegas.
-PLANIFICADOR_ACTIVO = os.getenv("MIR_PLANIFICADOR", "1") != "0"   # MIR_PLANIFICADOR=0 vuelve a la navegacion reactiva
-MAPA_CADA_N_PASOS = 3
-PLAN_VELOCIDAD = 0.30
-PLAN_OMEGA = 0.30
-# Siguiendo una ruta planificada (que ya guarda distancia a lo conocido), la seguridad
-# final usa margenes de choque, no de comodidad: si no, frena rutas validas en pasillos.
-PLAN_FRENTE_MIN = 0.35
-PLAN_DIAGONAL_MIN = 0.25
-PLAN_LADO_MIN = 0.12
-PLAN_GIRO_MIN = 0.25
-PLAN_LLEGADA_CERCA = 0.60          # la meta cae en un obstaculo: llegar a esto cuenta como exito
-
-MODE_PLAN = "PLAN"
-MODE_GOAL = "GOAL"
-MODE_AVOID_TURN = "AVOID_TURN"
-MODE_AVOID_FOLLOW = "AVOID_FOLLOW"
-MODE_WAIT_PERSON = "WAIT_PERSON"
-
-# ===================================================
-# FUNCIONES
-# ===================================================
-def clamp(value, minimum, maximum):
-    return max(minimum, min(maximum, value))
+YOLO_EVERY_STEPS = 4
+PERSON_CLEAR_DETECTIONS = 5
+DESTINATIONS = {ord('1'): 'ENTREGA_1', ord('2'): 'ENTREGA_2', ord('3'): 'ENTREGA_3'}
+ROBOT_FORWARD_AXIS = '+X'
+TURN_SIGN = 1.0
+LIDAR_SWAP_SIDES = False
+# Eje del primer rayo del LiDAR: Webots suele escanear de izquierda a derecha.
+# Comprobar en Show Lidar Rays Paths antes de confiar en el mapa.
+LIDAR_LOCAL_FORWARD = '+X'
+LIDAR_LOCAL_LEFT = '+Y'
+LIDAR_ANGLE_SIGN = -1.0
+LIDAR_CENTER_OFFSET = 0.0
+JEV_ENABLED = True
+JEV_REQUEST_TIMEOUT = 8.0
+MAP_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'factory_map.json')
 
 
-def axis_vector(axis):
-    axes = {"+X": [1.0, 0.0, 0.0], "-X": [-1.0, 0.0, 0.0], "+Y": [0.0, 1.0, 0.0], "-Y": [0.0, -1.0, 0.0], "+Z": [0.0, 0.0, 1.0], "-Z": [0.0, 0.0, -1.0]}
-    return np.array(axes[axis], dtype=float)
+def clamp(value, lower, upper):
+    return max(lower, min(upper, value))
 
 
-def planar_position(node):
-    position = np.array(node.getPosition(), dtype=float)
-    up = axis_vector("+" + WORLD_UP_AXIS)
-    return position - np.dot(position, up) * up
+def unit_axis(name):
+    axes = {'+X': [1.0, 0.0, 0.0], '-X': [-1.0, 0.0, 0.0], '+Y': [0.0, 1.0, 0.0], '-Y': [0.0, -1.0, 0.0], '+Z': [0.0, 0.0, 1.0], '-Z': [0.0, 0.0, -1.0]}
+    return np.array(axes[name], dtype=float)
 
 
-def goal_geometry(robot_node, target):
-    # target: punto en el plano del suelo (np.array de 3, como planar_position).
-    displacement = target - planar_position(robot_node)
-    distance = float(np.linalg.norm(displacement))
-    if distance < 0.0001:
-        return distance, 0.0
-    up = axis_vector("+" + WORLD_UP_AXIS)
-    orientation = np.array(robot_node.getOrientation(), dtype=float).reshape((3, 3))
-    forward = orientation.dot(axis_vector(ROBOT_FORWARD_AXIS))
-    forward -= np.dot(forward, up) * up
-    forward_norm = float(np.linalg.norm(forward))
-    if forward_norm < 0.0001:
-        raise ValueError("ROBOT_FORWARD_AXIS apunta en vertical: revisa el eje delantero")
-    forward /= forward_norm
-    desired = displacement / distance
-    angle_error = math.atan2(float(np.dot(up, np.cross(forward, desired))), float(np.dot(forward, desired)))
-    return distance, angle_error
+def heading(node):
+    orientation = np.array(node.getOrientation(), dtype=float).reshape((3, 3))
+    direction = orientation.dot(unit_axis(ROBOT_FORWARD_AXIS))
+    return math.atan2(float(direction[1]), float(direction[0]))
 
 
-def read_lidar_distances(front_lidar, back_lidar):
-    # Sectores por angulo real en el marco del robot (ver lidar.py); las distancias
-    # son holgura al borde de la huella del robot. Una zona sin rayos validos
-    # nunca se considera despejada: su sector vale 0.0 y ok=False.
-    empty = {"left": 0.0, "front_left": 0.0, "front": 0.0, "front_right": 0.0, "right": 0.0, "back": 0.0, "ok": False}
+def waypoint_command(robot_node, waypoint, speed):
+    position = robot_node.getPosition()
+    dx, dy = waypoint[0] - position[0], waypoint[1] - position[1]
+    distance = math.hypot(dx, dy)
+    target_angle = math.atan2(dy, dx)
+    error = math.atan2(math.sin(target_angle - heading(robot_node)), math.cos(target_angle - heading(robot_node)))
+    if abs(error) > 0.16:
+        return 0.0, clamp(error * 0.9, -ANGULAR_SPEED_MAX, ANGULAR_SPEED_MAX), distance
+    return min(speed, max(0.06, distance * 0.6)), clamp(error * 0.5, -0.12, 0.12), distance
+
+
+def valid_ranges(lidar):
+    # Inf = rayo sin retorno, que permite mapear espacio libre solo hasta maxRange.
     try:
-        front_values = front_lidar.getLayerRangeImage(0)
-        back_values = back_lidar.getLayerRangeImage(0)
-        if not front_values or not back_values:
-            return empty
-        data = distancias_por_sector(front_values, back_values, front_lidar.getMaxRange(), back_lidar.getMaxRange(),
-                                     math.degrees(front_lidar.getFov()))
+        raw = np.asarray(lidar.getLayerRangeImage(lidar.getNumberOfLayers() // 2), dtype=float)
+        maximum = float(lidar.getMaxRange())
+        if len(raw) == 0 or maximum <= 0.0:
+            return None, 0.0
+        raw[np.isposinf(raw)] = maximum
+        raw[~np.isfinite(raw)] = 0.0
+        raw[(raw < 0.05) | (raw > maximum)] = 0.0
+        return raw, maximum
     except Exception as error:
-        print("ERROR LIDAR: {}".format(error))
-        return empty
+        print('ERROR al leer LiDAR: {}'.format(error))
+        return None, 0.0
 
+
+def sector(values, a, b, maximum):
+    if values is None:
+        return 0.0
+    total = len(values)
+    part = values[int(total * a):max(int(total * b), int(total * a) + 1)]
+    good = part[part > 0.0]
+    if len(good) < max(1, int(len(part) * 0.45)):
+        return 0.0
+    return float(np.percentile(good, 15))
+
+
+def read_scan(front, back):
+    values, fmax = valid_ranges(front)
+    rear, rmax = valid_ranges(back)
+    scan = {'I': sector(values, 0.06, 0.23, fmax), 'DI': sector(values, 0.23, 0.41, fmax), 'F': sector(values, 0.41, 0.59, fmax), 'DD': sector(values, 0.59, 0.77, fmax), 'D': sector(values, 0.77, 0.94, fmax), 'B': sector(rear, 0.35, 0.65, rmax)}
     if LIDAR_SWAP_SIDES:
-        data["left"], data["right"] = data["right"], data["left"]
-        data["front_left"], data["front_right"] = data["front_right"], data["front_left"]
-
-    data["ok"] = all(data[k] > 0.0 for k in ("left", "front_left", "front", "front_right", "right", "back"))
-    return data
-
-
-def forward_corridor_clear(scan):
-    return scan["ok"] and scan["front"] >= SAFE_DISTANCE_FRONT and scan["front_left"] >= SAFE_DISTANCE_DIAGONAL and scan["front_right"] >= SAFE_DISTANCE_DIAGONAL and scan["left"] >= SAFE_DISTANCE_SIDE and scan["right"] >= SAFE_DISTANCE_SIDE
+        scan['I'], scan['D'] = scan['D'], scan['I']
+        scan['DI'], scan['DD'] = scan['DD'], scan['DI']
+    scan['ok'] = min(scan.values()) > 0.0
+    return scan
 
 
-def plan_forward_clear(scan):
-    return scan["ok"] and scan["front"] >= PLAN_FRENTE_MIN and scan["front_left"] >= PLAN_DIAGONAL_MIN \
-        and scan["front_right"] >= PLAN_DIAGONAL_MIN and scan["left"] >= PLAN_LADO_MIN and scan["right"] >= PLAN_LADO_MIN
+def lidar_hits(lidar, sensor_node):
+    """Retornos reales del LiDAR transformados a XY global; no depende de sectores resumidos."""
+    values, maximum = valid_ranges(lidar)
+    if values is None or sensor_node is None:
+        return [], False
+    valid = int(np.count_nonzero(values > 0.0))
+    if valid < max(10, int(len(values) * LIDAR_MIN_VALID_FRACTION)):
+        return [], False
+    rotation = np.array(sensor_node.getOrientation(), dtype=float).reshape((3, 3))
+    origin = sensor_node.getPosition()
+    forward = unit_axis(LIDAR_LOCAL_FORWARD)
+    left = unit_axis(LIDAR_LOCAL_LEFT)
+    count = len(values)
+    fov = float(lidar.getFov())
+    points = []
+    for index in range(count):
+        distance = float(values[index])
+        if not (0.05 < distance < maximum - 0.08):
+            continue
+        angle = LIDAR_CENTER_OFFSET + LIDAR_ANGLE_SIGN * (index / float(max(1, count - 1)) - 0.5) * fov
+        local = math.cos(angle) * forward + math.sin(angle) * left
+        direction = rotation.dot(local)
+        if abs(float(direction[2])) > 0.24:
+            continue
+        points.append((float(origin[0] + distance * direction[0]), float(origin[1] + distance * direction[1])))
+    return points, True
 
 
-def plan_turn_clear(scan, direction):
-    if not scan["ok"]:
+def build_environment(front, front_node, back, back_node):
+    front_points, front_ok = lidar_hits(front, front_node)
+    rear_points, back_ok = lidar_hits(back, back_node)
+    # Cada punto conserva su sensor de origen, para diagnosticar la envolvente de giro.
+    tagged = [(point, 'FRONTAL') for point in front_points] + [(point, 'TRASERO') for point in rear_points]
+    return {'points': front_points + rear_points, 'tagged': tagged, 'ok': front_ok and back_ok, 'front_count': len(front_points), 'back_count': len(rear_points)}
+
+
+def blocking_hit_diagnostic(robot_node, environment, point, scan):
+    if point is None:
+        return 'Sin retorno LiDAR identificable'
+    pose = robot_node.getPosition()
+    dx, dy = point[0] - pose[0], point[1] - pose[1]
+    distance = math.hypot(dx, dy)
+    azimuth = math.atan2(dy, dx)
+    local_angle = math.atan2(math.sin(azimuth - heading(robot_node)), math.cos(azimuth - heading(robot_node)))
+    nearest_sensor = 'NO IDENTIFICADO'
+    best = float('inf')
+    for hit, sensor in environment.get('tagged', []):
+        error = math.hypot(hit[0] - point[0], hit[1] - point[1])
+        if error < best:
+            best, nearest_sensor = error, sensor
+    return 'Sensor {} | obstaculo X {:.2f} Y {:.2f} | al centro {:.2f} m | angulo local {:.2f} rad | B {:.2f} m | radio giro {:.2f} m'.format(nearest_sensor, point[0], point[1], distance, local_angle, scan['B'], ROTATION_RADIUS)
+
+
+def can_begin_recovery(robot_node, environment, scan, person):
+    # Probar primero retroceso y, si no es viable, avance corto. Ninguna opcion fuerza una colision.
+    if person or not environment['ok'] or not scan['ok']:
+        return 0, 'PERSONA DETECTADA O LIDAR INVALIDO'
+    if scan['B'] >= RECOVERY_REAR_MIN:
+        permitted, point, reason = clearance_for_motion(robot_node, environment, -RECOVERY_REVERSE_SPEED, 0.0)
+        if permitted:
+            return -1, 'RETROCESO'
+    if scan['F'] >= RECOVERY_FORWARD_MIN:
+        permitted, point, reason = clearance_for_motion(robot_node, environment, RECOVERY_REVERSE_SPEED, 0.0)
+        if permitted:
+            return 1, 'AVANCE'
+    return 0, 'SIN PASILLO SEGURO PARA REPOSICIONAR'
+
+
+def recovery_motion_clear(robot_node, environment, direction, person):
+    if person or not environment['ok']:
+        return False, 'PERSONA DETECTADA O LIDAR INVALIDO'
+    permitted, point, reason = clearance_for_motion(robot_node, environment, direction * RECOVERY_REVERSE_SPEED, 0.0)
+    return permitted, reason
+
+
+def clearance_for_motion(robot_node, environment, speed, omega):
+    """Valida barrido recto o rotacion en sitio. Ante lecturas invalidas se detiene."""
+    if not environment['ok']:
+        return False, None, 'LIDAR_NO_DISPONIBLE'
+    position = robot_node.getPosition()
+    yaw = heading(robot_node)
+    fx, fy = math.cos(yaw), math.sin(yaw)
+    lx, ly = -fy, fx
+    radius = FOOTPRINT_RADIUS + FOOTPRINT_MARGIN
+    near = None
+    near_distance = float('inf')
+    turning = abs(omega) > 0.01 and abs(speed) < 0.015
+    for point in environment['points']:
+        dx, dy = point[0] - position[0], point[1] - position[1]
+        distance = math.hypot(dx, dy)
+        if turning:
+            blocked = distance <= ROTATION_RADIUS
+        elif speed > 0.0:
+            longitudinal = dx * fx + dy * fy
+            lateral = dx * lx + dy * ly
+            blocked = -0.08 <= longitudinal <= PATH_LOOKAHEAD and abs(lateral) <= radius
+        elif speed < 0.0:
+            longitudinal = -(dx * fx + dy * fy)
+            lateral = dx * lx + dy * ly
+            blocked = -0.08 <= longitudinal <= REVERSE_LOOKAHEAD and abs(lateral) <= radius
+        else:
+            blocked = False
+        if blocked and distance < near_distance:
+            near, near_distance = point, distance
+    if near is not None:
+        return False, near, 'BARRIDO_GIRO_BLOQUEADO' if turning else 'CORREDOR_BLOQUEADO'
+    return True, None, 'DESPEJADO'
+
+
+def safe_drive(speed, omega, environment, robot_node, person):
+    if person:
+        return 0.0, 0.0, None, 'PERSONA_DETECTADA'
+    if abs(speed) > 0.01 and abs(omega) > 0.13:
+        return 0.0, 0.0, None, 'CURVATURA_NO_VALIDADA'
+    permitted, obstacle, reason = clearance_for_motion(robot_node, environment, speed, omega)
+    if not permitted:
+        return 0.0, 0.0, obstacle, reason
+    return speed, omega, None, 'OK'
+
+
+def show_map(memoria, robot_node, route_points, destination_name):
+    """Mapa debug en PNG: ocupacion, trayectoria y pose en coordenadas correctas."""
+    height, width = memoria.height, memoria.width
+    frame = np.full((height, width, 3), 125, dtype=np.uint8)
+    for r in range(height):
+        for c in range(width):
+            status = memoria.cell_status((c, r))
+            frame[height - 1 - r, c] = (228, 236, 225) if status == 'LIBRE' else ((60, 72, 85) if status == 'OCUPADA' else ((30, 90, 235) if status == 'BLOQUEO_TEMPORAL' else (165, 165, 165)))
+    def pixel(x, y):
+        cell = memoria.world_to_cell(x, y)
+        return (cell[0], height - 1 - cell[1]) if cell is not None else None
+    for i in range(len(route_points) - 1):
+        a, b = pixel(*route_points[i]), pixel(*route_points[i + 1])
+        if a is not None and b is not None:
+            cv2.line(frame, a, b, (15, 180, 20), 1)
+    pose = robot_node.getPosition()
+    robot_pixel = pixel(pose[0], pose[1])
+    if robot_pixel:
+        cv2.circle(frame, robot_pixel, 2, (230, 80, 25), -1)
+        aim = pixel(pose[0] + 0.60 * math.cos(heading(robot_node)), pose[1] + 0.60 * math.sin(heading(robot_node)))
+        if aim:
+            cv2.line(frame, robot_pixel, aim, (230, 80, 25), 1)
+    scale = 5
+    frame = cv2.resize(frame, (width * scale, height * scale), interpolation=cv2.INTER_NEAREST)
+    cv2.putText(frame, 'Mapa MiR100 | {}'.format(destination_name or 'Exploracion'), (8, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 1)
+    cv2.imwrite(MAP_VIEW_FILE, frame)
+    print('MAPA VISUAL GUARDADO: {}'.format(MAP_VIEW_FILE))
+
+
+def map_lidar(memoria, lidar, sensor_node):
+    # Las poses de los sensores se obtienen por Supervisor.getFromDevice().
+    values, maximum = valid_ranges(lidar)
+    if values is None or sensor_node is None:
         return False
-    if direction == "LEFT":
-        return scan["left"] >= PLAN_GIRO_MIN and scan["front_left"] >= PLAN_GIRO_MIN
-    return scan["right"] >= PLAN_GIRO_MIN and scan["front_right"] >= PLAN_GIRO_MIN
+    rotation = np.array(sensor_node.getOrientation(), dtype=float).reshape((3, 3))
+    origin = sensor_node.getPosition()
+    basis_forward = unit_axis(LIDAR_LOCAL_FORWARD)
+    basis_left = unit_axis(LIDAR_LOCAL_LEFT)
+    fov = float(lidar.getFov())
+    count = len(values)
+    # Submuestreo de rayos para no ralentizar demasiado Webots.
+    stride = max(1, int(count / 110))
+    for i in range(0, count, stride):
+        reading = float(values[i])
+        if reading <= 0.0:
+            continue
+        ray_angle = LIDAR_CENTER_OFFSET + LIDAR_ANGLE_SIGN * ((i / float(max(1, count - 1))) - 0.5) * fov
+        local = math.cos(ray_angle) * basis_forward + math.sin(ray_angle) * basis_left
+        world = rotation.dot(local)
+        if abs(world[2]) > 0.24:
+            continue  # Ignorar rayos demasiado inclinados en el mapa horizontal.
+        azimuth = math.atan2(float(world[1]), float(world[0]))
+        hit = reading < maximum - 0.08
+        memoria.observe_ray((origin[0], origin[1]), azimuth, reading, maximum, hit)
+    return True
 
 
-def turn_clearance(scan, direction):
-    # Una medida del costado no garantiza que el robot pueda girar: exigir tambien diagonal.
-    if not scan["ok"]:
-        return False
-    if direction == "LEFT":
-        return scan["left"] >= TURN_CLEARANCE_MIN and scan["front_left"] >= TURN_CLEARANCE_MIN
-    if direction == "RIGHT":
-        return scan["right"] >= TURN_CLEARANCE_MIN and scan["front_right"] >= TURN_CLEARANCE_MIN
-    return False
-
-
-def scan_text(scan):
-    return "I {:.2f} DI {:.2f} F {:.2f} DD {:.2f} D {:.2f}".format(scan["left"], scan["front_left"], scan["front"], scan["front_right"], scan["right"])
-
-
-def choose_avoid_direction(scan):
-    # Regla local: solo lados con espacio para girar (costado Y diagonal);
-    # entre ellos, el que tenga mas espacio libre. None si ninguno sirve.
-    candidates = []
-    for direction, side, diagonal in (("LEFT", "left", "front_left"), ("RIGHT", "right", "front_right")):
-        if turn_clearance(scan, direction) and scan[side] >= SIDE_MIN_DISTANCE:
-            candidates.append((min(scan[side], scan[diagonal]), direction))
+def block_detected_front(memoria, robot_node, lidar, lidar_node, now):
+    """Marca el eco frontal más cercano en XY; evita inventar obstáculos sin un retorno LiDAR."""
+    values, maximum = valid_ranges(lidar)
+    if values is None or lidar_node is None:
+        return None
+    count = len(values)
+    start = int(count * 0.41)
+    end = max(start + 1, int(count * 0.59))
+    candidates = [(float(values[i]), i) for i in range(start, end) if 0.05 < values[i] < maximum - 0.08]
     if not candidates:
         return None
-    return max(candidates)[1]
+    distance, i = min(candidates)
+    rotation = np.array(lidar_node.getOrientation(), dtype=float).reshape((3, 3))
+    origin = lidar_node.getPosition()
+    angle = LIDAR_CENTER_OFFSET + LIDAR_ANGLE_SIGN * ((i / float(max(1, count - 1))) - 0.5) * float(lidar.getFov())
+    local = math.cos(angle) * unit_axis(LIDAR_LOCAL_FORWARD) + math.sin(angle) * unit_axis(LIDAR_LOCAL_LEFT)
+    world = rotation.dot(local)
+    if abs(world[2]) > 0.24:
+        return None
+    x = float(origin[0] + distance * world[0])
+    y = float(origin[1] + distance * world[1])
+    robot_xy = robot_node.getPosition()
+    if math.hypot(x - robot_xy[0], y - robot_xy[1]) < 0.25:
+        return None
+    memoria.mark_temporary_obstacle(x, y, radius=TEMP_BLOCK_RADIUS, expires_at=now + TEMP_BLOCK_SECONDS)
+    return (x, y, distance)
 
 
-def follow_side_omega(direction, left, right, goal_angle):
-    # Girar a derecha deja normalmente el obstaculo a la IZQUIERDA.
-    if direction == "RIGHT":
-        side = left
-        omega = SIDE_KP * (side - SIDE_DESIRED_DISTANCE)
-    else:
-        side = right
-        omega = SIDE_KP * (SIDE_DESIRED_DISTANCE - side)
-    # Pequeno sesgo hacia el objetivo; el LiDAR sigue siendo prioritario.
-    omega += 0.05 * clamp(goal_angle, -1.0, 1.0)
-    return clamp(omega, -NAVIGATION_TURN_SPEED, NAVIGATION_TURN_SPEED)
+def print_map_diagnostic(memoria, robot_node, obstacle, route_points=None):
+    position = robot_node.getPosition()
+    cell = memoria.world_to_cell(obstacle[0], obstacle[1])
+    status = memoria.cell_status(cell)
+    print('DIAGNOSTICO MAPA | Robot X {:.2f} Y {:.2f} | Orientacion {:.2f} rad'.format(position[0], position[1], heading(robot_node)))
+    print('DIAGNOSTICO MAPA | Obstaculo X {:.2f} Y {:.2f} | Celda {} | Estado {}'.format(obstacle[0], obstacle[1], cell, status))
+    if route_points:
+        print('RUTA ANTERIOR | {} puntos'.format(len(route_points)))
+        for index, point in enumerate(route_points[:ROUTE_LOG_MAX_POINTS]):
+            print('  PUNTO {} | X {:.2f} Y {:.2f}'.format(index + 1, point[0], point[1]))
 
 
-def planar_forward(node):
-    # Vector unitario del frente del robot proyectado en el plano del suelo.
-    up = axis_vector("+" + WORLD_UP_AXIS)
-    orientation = np.array(node.getOrientation(), dtype=float).reshape((3, 3))
-    forward = orientation.dot(axis_vector(ROBOT_FORWARD_AXIS))
-    forward -= np.dot(forward, up) * up
-    norm = float(np.linalg.norm(forward))
-    return forward / norm if norm > 0.0001 else forward
+def validate_candidate(memoria, start_xy, candidate):
+    if not candidate:
+        return False, 'sin ruta'
+    first = candidate[0]
+    if math.hypot(first[0] - start_xy[0], first[1] - start_xy[1]) > PATH_START_MAX_DISTANCE:
+        return False, 'el inicio de A* esta demasiado lejos del robot (posible celda inicial inflada)'
+    if len(candidate) > 1 and not memoria.segment_is_clear(start_xy, candidate[1], allow_start_unknown=False):
+        return False, 'el primer tramo no atraviesa solo celdas libres'
+    return True, 'OK'
 
 
-def heading_delta(previous_forward, forward):
-    # Angulo con signo (rad, + = izquierda) entre dos orientaciones consecutivas.
-    up = axis_vector("+" + WORLD_UP_AXIS)
-    return math.atan2(float(np.dot(up, np.cross(previous_forward, forward))), float(np.dot(previous_forward, forward)))
+def route_signature(points, resolution=0.20):
+    """Resumen de trayectoria para detectar replanteamientos idénticos."""
+    return tuple((int(round(p[0] / resolution)), int(round(p[1] / resolution))) for p in points)
 
 
-def robot_pose(node):
-    # (x, y, yaw rad) para el mapa; el planificador asume Z hacia arriba.
-    position = planar_position(node)
-    return float(position[0]), float(position[1]), math.radians(robot_yaw_degrees(node))
+def jev_worker(ticket, observation, results):
+    try:
+        with TypeSafeClient(model='jev-latest') as client:
+            response = client.system_one(state=observation, questions={'decision': Choice(instructions='You are advising a mapping robot that has stopped because no verified collision-free route is currently available. Choose whether more mapping is needed or stopping is best. Do not command movement.', criteria={'MAP_MORE': 'The robot should gather more sensor data by supervised manual mapping', 'STOP': 'Stay stopped because the geometry is uncertain or blocked'})})
+        answer = response.choices['decision']
+        results.put((ticket, str(answer.choice).upper(), float(answer.confidence), None))
+    except Exception as error:
+        results.put((ticket, None, 0.0, str(error)))
 
 
-def robot_yaw_degrees(node):
-    forward = planar_forward(node)
-    if WORLD_UP_AXIS == "Z":
-        return math.degrees(math.atan2(forward[1], forward[0]))
-    if WORLD_UP_AXIS == "Y":
-        return math.degrees(math.atan2(-forward[2], forward[0]))
-    return math.degrees(math.atan2(forward[0], forward[1]))
-
-
-def normalize_destination(value, names):
-    # Acepta "ENTREGA_3", "entrega 3", "Entrega-3", "3" o 3.
-    text = str(value).strip().upper().replace(" ", "_").replace("-", "_")
-    if text in names:
-        return text
-    if text.isdigit() and "ENTREGA_{}".format(text) in names:
-        return "ENTREGA_{}".format(text)
-    return None
-
-
-# ===================================================
-# INICIALIZACION
-# ===================================================
 robot = Supervisor()
 time_step = int(robot.getBasicTimeStep())
 robot_node = robot.getSelf()
 if robot_node is None:
-    raise RuntimeError("Activa supervisor TRUE en el nodo principal del MiR100")
-
-motor_left_wheel = robot.getDevice("middle_left_wheel_joint")
-motor_right_wheel = robot.getDevice("middle_right_wheel_joint")
-motor_left_wheel.setPosition(float("inf"))
-motor_right_wheel.setPosition(float("inf"))
-motor_left_wheel.setVelocity(0.0)
-motor_right_wheel.setVelocity(0.0)
-
-front_lidar = robot.getDevice("front_lidar")
-back_lidar = robot.getDevice("back_lidar")
+    raise RuntimeError('Activa supervisor TRUE en el nodo principal del MiR100')
+left_motor = robot.getDevice('middle_left_wheel_joint')
+right_motor = robot.getDevice('middle_right_wheel_joint')
+for motor in (left_motor, right_motor):
+    motor.setPosition(float('inf'))
+    motor.setVelocity(0.0)
+front_lidar = robot.getDevice('front_lidar')
+back_lidar = robot.getDevice('back_lidar')
 front_lidar.enable(time_step)
 back_lidar.enable(time_step)
+front_node = robot.getFromDevice(front_lidar._tag)
+back_node = robot.getFromDevice(back_lidar._tag)
+if front_node is None or back_node is None:
+    print('AVISO: No se pudieron localizar los nodos LiDAR: no se guardara un mapa incorrecto.')
 
-depth_camera = robot.getDevice("depth_camera") if PROFUNDIDAD_ACTIVA else None
-if depth_camera is not None:
-    depth_camera.enable(time_step * PROFUNDIDAD_CADA_N_PASOS)
-    print("CAMARA DE PROFUNDIDAD: {}x{}, {:.0f} grados, {:.2f}-{:.2f} m".format(
-        depth_camera.getWidth(), depth_camera.getHeight(), math.degrees(depth_camera.getFov()),
-        depth_camera.getMinRange(), depth_camera.getMaxRange()))
-elif PROFUNDIDAD_ACTIVA:
-    print("ADVERTENCIA: no hay 'depth_camera'; solo LiDAR (no ve obstaculos por encima de su plano).")
-depth_sectors = {}
-depth_hits = []
-depth_points_xy = (np.zeros(0), np.zeros(0))
-occupancy_map = mapa_mod.Mapa()
-navigator = planificador.Navegador(occupancy_map, PLAN_VELOCIDAD, PLAN_OMEGA)
-if PLANIFICADOR_ACTIVO and WORLD_UP_AXIS != "Z":
-    print("ADVERTENCIA: el planificador asume Z hacia arriba; se usa la navegacion reactiva.")
-    PLANIFICADOR_ACTIVO = False
-depth_warned_at = -1e9
-depth_error_printed = False
-
-
-def read_depth_image(device):
-    # getRangeImage(data_type="buffer") devuelve un puntero ctypes a floats: se lee
-    # sin convertir 921.600 valores a una lista de Python.
-    pointer = device.getRangeImage(data_type="buffer")
-    if not pointer:
-        return None
-    height, width = device.getHeight(), device.getWidth()
-    return np.ctypeslib.as_array(pointer, shape=(height * width,)).reshape((height, width)).copy()
-
-camera = robot.getDevice("camera")
+camera = robot.getDevice('camera')
 camera.enable(time_step)
-camera_width = camera.getWidth()
-camera_height = camera.getHeight()
-
 keyboard = Keyboard()
 keyboard.enable(time_step)
-model = YOLO(YOLO_MODEL)
-person_model = None
-YOLO_CONFIANZA_PERSONA = YOLO_CONFIANZA_PERSONA_YOLO11
-for detector_file, detector_threshold in DETECTORES_PERSONAS:
-    if os.path.isfile(os.path.join(os.path.dirname(os.path.abspath(__file__)), detector_file)):
-        person_model = YOLO(detector_file)
-        YOLO_CONFIANZA_PERSONA = detector_threshold
-        print("DETECTOR DE PERSONAS: {} (umbral {})".format(detector_file, detector_threshold))
-        break
-else:
-    print("ADVERTENCIA: no hay detector de personas (ver construir_detector_personas.py); se usa {} con umbral {}".format(
-        YOLO_MODEL, YOLO_CONFIANZA_PERSONA_YOLO11))
-
-destination_nodes = {}
-for key, destination_def in DESTINATIONS.items():
-    node = robot.getFromDef(destination_def)
+model = YOLO('yolo11n.pt')
+destinations = {}
+for key, name in DESTINATIONS.items():
+    node = robot.getFromDef(name)
     if node is not None:
-        destination_nodes[key] = node
-        print("DESTINO DISPONIBLE: {} -> {}".format(destination_def, node.getPosition()))
+        destinations[key] = node
+        print('DESTINO: {} -> {}'.format(name, node.getPosition()))
     else:
-        print("DESTINO NO ENCONTRADO: {}".format(destination_def))
+        print('DESTINO NO ENCONTRADO: {}'.format(name))
 
+if os.path.isfile(MAP_FILE):
+    try:
+        memoria = MemoriaEspacial.load(MAP_FILE)
+        print('MEMORIA ESPACIAL CARGADA: {}'.format(MAP_FILE))
+    except Exception as error:
+        print('MAPA INCOMPATIBLE: {}. Creando mapa nuevo.'.format(error))
+        memoria = MemoriaEspacial(*MAP_BOUNDS, resolution=MAP_RESOLUTION, robot_radius=MAP_ROBOT_RADIUS)
+else:
+    memoria = MemoriaEspacial(*MAP_BOUNDS, resolution=MAP_RESOLUTION, robot_radius=MAP_ROBOT_RADIUS)
+
+mapping_active = True
 navigation_active = False
-current_destination = None
-current_destination_name = None
-mode = MODE_GOAL
-saved_mode = MODE_GOAL
-person_detected = False
-person_confidence = 0.0
-people = []              # personas ubicadas en el marco del robot (personas.ubicar)
-person_blocking = False  # una persona delante y cerca: frena el avance
-person_near = False      # una persona cerca: velocidad reducida
-wait_for_people = False  # la tarea pidio "esperar" ante personas
-person_close_latched = False  # ya se aviso de la persona cercana actual (evita repetir la parada)
-person_pause_until = None     # fin de la espera de PERSONA_ESPERA_S (tiempo de simulacion), o None
-person_pause_target = None    # (x, y) en el mundo de la persona por la que se espera
-person_last_present = 0.0     # ultima vez que hubo rastro de esa persona
-person_last_request = 0.0     # ultima vez que se le pidio paso
-person_stuck = False          # la ultima espera termino sin que la persona se fuera (luz naranja)
-person_near_announced = False # ya sono el pitido por la persona cercana actual
-alerts = avisos.Avisos(robot_node.getField("color"))
-alerts.luz("normal")
-lidar_points_xy = None
-people_zones = []        # (x, y, t) en el mundo, para que el planificador las rodee
-people_memory = []       # personas recordadas: dicts con x_mundo, y_mundo, t, fuente (ver remember_person)
-person_clear_count = 0
-annotated_frame = None
+current_goal = None
+current_name = None
+route = []
+route_index = 0
+blocked_steps = 0
+replan_attempts = 0
+last_route_signature = None
+last_route_start_position = None
+last_replan_time = -999.0
+last_block_obstacle = None
+last_block_robot_position = None
+turn_blocked_steps = 0
+last_motion_obstacle = None
+last_motion_reason = 'OK'
+last_motion_blocked = False
+recovery_active = False
+recovery_start_xy = None
+recovery_direction = 0
+recovery_start_time = 0.0
+recovery_attempts = 0
+recovery_turn_clear_count = 0
+last_progress_position = None
+last_progress_time = robot.getTime()
+last_save_time = robot.getTime()
 step_counter = 0
-avoid_direction = None
-avoid_attempts = 0
-avoid_started = 0.0
-avoid_start_position = None
 manual_speed = 0.0
 manual_omega = 0.0
-scan = {"left": 0.0, "front_left": 0.0, "front": 0.0, "front_right": 0.0, "right": 0.0, "back": 0.0, "ok": False}
+person_detected = False
+person_clear_count = 0
+annotated = None
+jev_results = queue.Queue()
+jev_ticket = 0
+jev_pending = False
+jev_requested_at = 0.0
 
-# Tareas: cada orden (teclado o puente) es una tarea con un final explicito:
-# estado "exito", "fallo" o "cancelada", y un motivo legible por el agente.
-task = None
-last_task = None
-task_options = {}         # opciones de la tarea en curso (velocidad, al_ver_persona, distancia_persona)
-task_counter = 0
-maneuver = None
-safety_block = None
-progress_position = None
-progress_time = 0.0
-lidar_bad_since = None
-nav_blocked_since = None
-person_since = None
-person_warned = False
+print('\nMiR100 MEMORIA ESPACIAL + A* + YOLO + JEV')
+print('M: activar/desactivar mapeo | S: guardar mapa | P: estadisticas | V: exportar PNG mapa')
+print('FLECHAS: explorar manualmente | 1/2/3: navegar usando mapa | 0/ESPACIO: cancelar')
+print('RECUPERACION DE GIRO: maximo {} intentos de retroceso <= {:.2f} m, siempre validando el LiDAR trasero'.format(RECOVERY_MAX_ATTEMPTS, RECOVERY_REVERSE_DISTANCE))
+print('IMPORTANTE: primero mapear los pasillos manualmente. No se asume que lo desconocido esta libre.\n')
 
-destination_by_name = {DESTINATIONS[key]: node for key, node in destination_nodes.items()}
+try:
+    while robot.step(time_step) != -1:
+        step_counter += 1
+        scan = read_scan(front_lidar, back_lidar)
+        environment = build_environment(front_lidar, front_node, back_lidar, back_node)
+        memoria.expire_temporary_obstacles(robot.getTime())
+        if mapping_active and step_counter % MAPPING_EVERY_STEPS == 0:
+            map_lidar(memoria, front_lidar, front_node)
+            map_lidar(memoria, back_lidar, back_node)
 
-bridge = None
-if PUENTE_ACTIVO:
-    try:
-        bridge = PuenteComandos(puerto=PUENTE_PUERTO)
-        print("PUENTE DE COMANDOS: escuchando en 127.0.0.1:{}".format(bridge.puerto))
-    except OSError as error:
-        print("ADVERTENCIA: no se pudo abrir el puente en el puerto {} ({}). Solo teclado.".format(PUENTE_PUERTO, error))
-
-
-def emit(event, data=None):
-    if bridge is not None:
-        bridge.emitir(event, robot.getTime(), data)
-
-
-def robot_context():
-    position = planar_position(robot_node)
-    context = {
-        "posicion": [round(float(position[0]), 2), round(float(position[1]), 2)],
-        "orientacion_grados": round(robot_yaw_degrees(robot_node), 1),
-        "modo": mode,
-        "navegando": navigation_active,
-        "destino": current_destination_name,
-        "lidar": {k: round(scan[k], 2) for k in ("left", "front_left", "front", "front_right", "right", "back")},
-        "lidar_ok": scan["ok"],
-        "persona_detectada": person_detected,
-        "personas": [{"holgura": round(p["holgura"], 2), "angulo": round(p["angulo"]), "fuente": p["fuente"],
-                      "posicion": [round(p.get("x_mundo", 0.0), 2), round(p.get("y_mundo", 0.0), 2)]} for p in people],
-        "obstaculos_altos": depth_hits,
-        "mapa_conocido_m2": known_map_m2(),
-    }
-    if navigation_active and mode == MODE_PLAN and navigator.ruta:
-        remaining = navigator.metros_restantes(robot_pose(robot_node))
-        context["ruta_planificada_m"] = round(remaining, 2) if remaining is not None else None
-    if current_destination is not None:
-        context["distancia_destino"] = round(goal_geometry(robot_node, current_destination)[0], 2)
-    return context
-
-
-def start_task(kind, args, origin, options=None):
-    global task, task_counter, task_options, person_stuck
-    person_stuck = False
-    if task is not None:
-        finish_task("cancelada", "reemplazada", "Una nueva orden ({}) reemplazo a esta tarea".format(kind))
-    task_counter += 1
-    task_options = options or {}
-    args = dict(args, **option_args(task_options)) if task_options else args
-    task = {"tarea_id": task_counter, "tipo": kind, "args": args, "origen": origin, "estado": "en_curso", "inicio": round(robot.getTime(), 2)}
-    emit("tarea_iniciada", dict(task))
-    return task_counter
-
-
-def finish_task(state, reason, detail=""):
-    # Cierra la tarea en curso y avisa a los clientes con el contexto completo.
-    global task, last_task
-    if task is None:
-        return
-    task.update({"estado": state, "motivo": reason, "detalle": detail, "fin": round(robot.getTime(), 2), "contexto": robot_context()})
-    last_task = task
-    task = None
-    print("TAREA {} {}: {} | {}".format(last_task["tarea_id"], state.upper(), reason, detail))
-    emit("tarea_terminada", dict(last_task))
-
-
-def stop_navigation():
-    global navigation_active, current_destination, current_destination_name, mode, manual_speed, manual_omega
-    navigator.detener()
-    navigation_active = False
-    current_destination = None
-    current_destination_name = None
-    mode = MODE_GOAL
-    manual_speed = 0.0
-    manual_omega = 0.0
-
-
-def person_still_there(target):
-    """Hay rastro de la persona en target: la camara la ve ahi ahora, o el LiDAR tiene ecos ahi."""
-    for p in people:
-        if math.hypot(p["x_mundo"] - target[0], p["y_mundo"] - target[1]) < PERSONA_FUSION_M:
-            return True
-    xs, ys = lidar.puntos_xy(front_lidar.getLayerRangeImage(0), back_lidar.getLayerRangeImage(0),
-                             front_lidar.getMaxRange(), back_lidar.getMaxRange(), math.degrees(front_lidar.getFov()))
-    if len(xs) == 0:
-        return False
-    x, y, yaw = robot_pose(robot_node)
-    c, s_ = math.cos(yaw), math.sin(yaw)
-    wx, wy = x + c * xs - s_ * ys, y + s_ * xs + c * ys
-    return bool(np.any(np.hypot(wx - target[0], wy - target[1]) < PERSONA_RASTRO_M))
-
-
-def forget_person_near(target):
-    people_memory[:] = [k for k in people_memory
-                        if math.hypot(k["x_mundo"] - target[0], k["y_mundo"] - target[1]) >= PERSONA_FUSION_M]
-
-
-def remember_person(person):
-    """Guarda o actualiza una persona detectada (posicion en el mundo)."""
-    now_t = robot.getTime()
-    for known in people_memory:
-        if math.hypot(known["x_mundo"] - person["x_mundo"], known["y_mundo"] - person["y_mundo"]) < PERSONA_FUSION_M:
-            known.update({"x_mundo": person["x_mundo"], "y_mundo": person["y_mundo"], "t": now_t, "fuente": person["fuente"]})
-            return
-    people_memory.append({"x_mundo": person["x_mundo"], "y_mundo": person["y_mundo"], "t": now_t, "fuente": person["fuente"]})
-
-
-def remembered_people():
-    """Personas vistas en los ultimos PERSONA_RECUERDO_S, con holgura y angulo desde la pose actual."""
-    now_t = robot.getTime()
-    people_memory[:] = [k for k in people_memory if now_t - k["t"] <= PERSONA_RECUERDO_S]
-    x, y, yaw = robot_pose(robot_node)
-    c, s_ = math.cos(yaw), math.sin(yaw)
-    result = []
-    for k in people_memory:
-        dx, dy = k["x_mundo"] - x, k["y_mundo"] - y
-        rx, ry = c * dx + s_ * dy, -s_ * dx + c * dy
-        clearance = math.hypot(max(abs(rx) - lidar.MEDIO_LARGO, 0.0), max(abs(ry) - lidar.MEDIO_ANCHO, 0.0))
-        result.append(dict(k, holgura=clearance, angulo=math.degrees(math.atan2(ry, rx)),
-                           visto_hace=round(now_t - k["t"], 1)))
-    return result
-
-
-def person_stop_distance(person):
-    """Holgura a la que una persona detiene al robot: mas lejos si esta de frente."""
-    return PERSONA_PARADA_FRENTE_M if abs(person["angulo"]) <= PERSONA_ANGULO_FRENTE else PERSONA_PARADA_M
-
-
-def parse_task_options(args):
-    """Opciones opcionales de una orden de movimiento. Lanza ValueError si son invalidas."""
-    options = {"al_ver_persona": "continuar", "distancia_persona": DISTANCIA_PERSONA_DEFECTO, "velocidad": PLAN_VELOCIDAD}
-    if args.get("al_ver_persona") is not None:
-        value = str(args["al_ver_persona"]).strip().lower()
-        if value not in OPCIONES_AL_VER_PERSONA:
-            raise ValueError("al_ver_persona debe ser una de: {}".format(", ".join(OPCIONES_AL_VER_PERSONA)))
-        options["al_ver_persona"] = value
-    if args.get("distancia_persona") is not None:
-        options["distancia_persona"] = max(0.3, min(10.0, float(args["distancia_persona"])))
-    if args.get("velocidad") is not None:
-        options["velocidad"] = max(VELOCIDAD_MIN, min(VELOCIDAD_MAX_ORDEN, float(args["velocidad"])))
-    return options
-
-
-def option_args(options):
-    # Solo lo que difiere del comportamiento por defecto, para mostrarlo en la tarea.
-    defaults = {"al_ver_persona": "continuar", "distancia_persona": DISTANCIA_PERSONA_DEFECTO, "velocidad": PLAN_VELOCIDAD}
-    return {k: v for k, v in options.items() if v != defaults[k]}
-
-
-def start_navigation(name, target=None):
-    # name: DEF de una entrega, o etiqueta de un punto (target dado en coordenadas).
-    global navigation_active, current_destination, current_destination_name, mode, saved_mode
-    global avoid_attempts, manual_speed, manual_omega, maneuver, progress_position, progress_time, lidar_bad_since
-    global nav_blocked_since
-    maneuver = None
-    lidar_bad_since = None
-    nav_blocked_since = None
-    current_destination = planar_position(destination_by_name[name]) if target is None else target
-    current_destination_name = name
-    navigation_active = True
-    base_mode = MODE_PLAN if PLANIFICADOR_ACTIVO else MODE_GOAL
-    mode = MODE_WAIT_PERSON if person_blocking and base_mode != MODE_PLAN else base_mode
-    saved_mode = base_mode
-    if person_pause_until is not None and robot.getTime() < person_pause_until:
-        mode = MODE_WAIT_PERSON  # una orden nueva tambien respeta la espera por persona en curso
-    if PLANIFICADOR_ACTIVO:
-        navigator.iniciar((float(current_destination[0]), float(current_destination[1])))
-        navigator.velocidad_max = task_options.get("velocidad", PLAN_VELOCIDAD)
-    avoid_attempts = 0
-    manual_speed = 0.0
-    manual_omega = 0.0
-    progress_position = planar_position(robot_node)
-    progress_time = robot.getTime()
-    print("\nINICIANDO RUTA: {}".format(name))
-
-
-def route_length(target):
-    """Metros de ruta A* desde la pose actual hasta target (x, y) con el mapa actual, o None."""
-    probe = planificador.Navegador(occupancy_map, PLAN_VELOCIDAD, PLAN_OMEGA)
-    probe.iniciar(target)
-    pose = robot_pose(robot_node)
-    cells = probe.planificar(pose)
-    if cells is None:
-        return None
-    points = [(pose[0], pose[1])] + [occupancy_map.centro(f, c) for f, c in cells]
-    return float(sum(math.hypot(b[0] - a[0], b[1] - a[1]) for a, b in zip(points, points[1:])))
-
-
-def known_map_m2():
-    return round(float(np.count_nonzero(occupancy_map.conocido())) * occupancy_map.resolucion ** 2, 1)
-
-
-def start_maneuver(kind, amount):
-    global maneuver, manual_speed, manual_omega, mode, saved_mode
-    stop_navigation()
-    if person_pause_until is not None and robot.getTime() < person_pause_until:
-        saved_mode, mode = mode, MODE_WAIT_PERSON  # respeta la espera por persona en curso
-    manual_speed = 0.0
-    manual_omega = 0.0
-    maneuver = {"tipo": kind, "objetivo": amount, "hecho": 0.0, "inicio": robot.getTime(),
-                "posicion_inicial": planar_position(robot_node), "frente_previo": planar_forward(robot_node),
-                "bloqueado_desde": None}
-
-
-def handle_command(client, message):
-    global maneuver
-    cmd = message["cmd"]
-    args = message.get("args", {})
-    request_id = message.get("id")
-
-    def ok(result=None):
-        bridge.responder(client, request_id, True, result)
-
-    def fail(error):
-        bridge.responder(client, request_id, False, error=error)
-
-    try:
-        if cmd == "estado":
-            ok({"contexto": robot_context(), "tarea": task, "ultima_tarea": last_task,
-                "maniobra": None if maneuver is None else {"tipo": maneuver["tipo"], "objetivo": maneuver["objetivo"], "hecho": round(maneuver["hecho"], 3)}})
-        elif cmd == "destinos":
-            here = planar_position(robot_node)
-            ok({"destinos": [{"nombre": name, "posicion": [round(float(p[0]), 2), round(float(p[1]), 2)],
-                              "distancia": round(float(np.linalg.norm(p - here)), 2)}
-                             for name, p in ((n, planar_position(node)) for n, node in destination_by_name.items())]})
-        elif cmd == "escanear":
-            ok({"lidar": {k: round(scan[k], 2) for k in ("left", "front_left", "front", "front_right", "right", "back")},
-                "lidar_ok": scan["ok"], "frente_libre": forward_corridor_clear(scan),
-                "puede_girar_izquierda": turn_clearance(scan, "LEFT"), "puede_girar_derecha": turn_clearance(scan, "RIGHT"),
-                "lado_sugerido_para_evadir": choose_avoid_direction(scan), "persona_detectada": person_detected,
-                "obstaculos_altos": depth_hits,
-                "nota": "Holgura en metros desde el borde del robot; 0.0 = sin lecturas validas (se trata como bloqueado). "
-                        "Combina LiDAR (plano a 0.19 m) y camara de profundidad (al frente, hasta 1.95 m); "
-                        "obstaculos_altos = sectores donde la profundidad vio algo mas cerca que el LiDAR (p. ej. una mesa)."})
-        elif cmd == "volcar_camara":
-            # Diagnostico: guarda la imagen de la camara y lo que YOLO detecta en ella.
-            path = str(args.get("ruta", ""))
-            if not path.endswith(".png"):
-                fail("'ruta' debe terminar en .png")
-                return
-            raw = camera.getImage()
-            if not raw:
-                fail("La camara no tiene imagen")
-                return
-            img = cv2.cvtColor(np.frombuffer(raw, dtype=np.uint8).reshape((camera_height, camera_width, 4)), cv2.COLOR_BGRA2BGR)
-            res = model.predict(img, conf=0.10, verbose=False)
-            found = [{"clase": res[0].names[int(b.cls[0])], "confianza": round(float(b.conf[0]), 2),
-                      "caja": [round(v) for v in b.xyxy[0].tolist()]} for b in res[0].boxes] if res else []
-            cv2.imwrite(path, img if args.get("cruda") else (res[0].plot() if res else img))
-            ok({"ruta": path, "tamano": [camera_width, camera_height], "detecciones": found,
-                "personas_en_uso": [{"holgura": round(p["holgura"], 2), "fuente": p["fuente"]} for p in people]})
-        elif cmd == "volcar_mapa":
-            # Diagnostico: guarda las capas del mapa (.npz) para ver que bloquea las rutas.
-            path = str(args.get("ruta", ""))
-            if not path.endswith(".npz"):
-                fail("'ruta' debe terminar en .npz")
-                return
-            np.savez(path, log_odds=occupancy_map.log_odds, alto=occupancy_map.alto, ocupado=occupancy_map.ocupado(),
-                     origen=np.array([occupancy_map.x_min, occupancy_map.y_min]), resolucion=occupancy_map.resolucion)
-            ok({"ruta": path, "contexto": robot_context()})
-        elif cmd == "volcar_profundidad":
-            # Diagnostico: guarda la imagen de profundidad cruda (.npy) para calibrar.
-            if depth_camera is None:
-                fail("No hay camara de profundidad")
-                return
-            path = str(args.get("ruta", ""))
-            if not path.endswith(".npy"):
-                fail("'ruta' debe terminar en .npy")
-                return
-            image = read_depth_image(depth_camera)
-            if image is None:
-                fail("La camara de profundidad aun no tiene imagen")
-                return
-            np.save(path, image)
-            ok({"ruta": path, "contexto": robot_context()})
-        elif cmd == "ir_a":
-            name = normalize_destination(args.get("destino", ""), destination_by_name)
-            if name is None:
-                fail("Destino desconocido '{}'. Disponibles: {}".format(args.get("destino"), ", ".join(sorted(destination_by_name))))
-                return
-            task_id = start_task("ir_a", {"destino": name}, "puente", parse_task_options(args))
-            start_navigation(name)
-            ok({"tarea_id": task_id, "destino": name})
-        elif cmd == "ruta":
-            # Distancia por ruta (A* sobre el mapa actual) hasta un destino o un punto, sin moverse.
-            if "destino" in args:
-                name = normalize_destination(args.get("destino", ""), destination_by_name)
-                if name is None:
-                    fail("Destino desconocido '{}'. Disponibles: {}".format(args.get("destino"), ", ".join(sorted(destination_by_name))))
-                    return
-                goal = planar_position(destination_by_name[name])
-                label = name
-            else:
-                goal = np.array([float(args.get("x")), float(args.get("y")), 0.0])
-                label = "PUNTO({:.2f}, {:.2f})".format(goal[0], goal[1])
-            here = planar_position(robot_node)
-            meters = route_length((float(goal[0]), float(goal[1])))
-            ok({"destino": label, "hay_ruta": meters is not None,
-                "metros_por_ruta": None if meters is None else round(meters, 2),
-                "metros_en_linea_recta": round(float(np.linalg.norm(goal - here)), 2),
-                "mapa_conocido_m2": known_map_m2()})
-        elif cmd == "ir_a_punto":
-            # Punto intermedio (waypoint) en coordenadas del mundo, para rodear obstaculos.
-            x, y = float(args.get("x")), float(args.get("y"))
-            if not (math.isfinite(x) and math.isfinite(y)) or abs(x) > PUNTO_MAX_COORDENADA or abs(y) > PUNTO_MAX_COORDENADA:
-                fail("'x' e 'y' deben ser numeros finitos de como maximo {} en valor absoluto".format(PUNTO_MAX_COORDENADA))
-                return
-            up = axis_vector("+" + WORLD_UP_AXIS)
-            target = np.array([x, y, 0.0]) if WORLD_UP_AXIS == "Z" else np.array([x, 0.0, y])
-            target = target - np.dot(target, up) * up
-            label = "PUNTO({:.2f}, {:.2f})".format(x, y)
-            task_id = start_task("ir_a_punto", {"x": x, "y": y}, "puente", parse_task_options(args))
-            start_navigation(label, target)
-            ok({"tarea_id": task_id, "destino": label})
-        elif cmd in ("girar", "avanzar"):
-            key, limit = ("grados", MANIOBRA_MAX_GRADOS) if cmd == "girar" else ("metros", MANIOBRA_MAX_METROS)
-            amount = float(args.get(key, 0.0))
-            if amount == 0.0 or abs(amount) > limit:
-                fail("'{}' debe ser distinto de 0 y como maximo {} en valor absoluto".format(key, limit))
-                return
-            task_id = start_task(cmd, {key: amount}, "puente", parse_task_options(args))
-            start_maneuver(cmd, math.radians(amount) if cmd == "girar" else amount)
-            ok({"tarea_id": task_id, key: amount})
-        elif cmd == "parar":
-            had_task = task is not None
-            finish_task("cancelada", "parar", "Cancelada por orden 'parar'")
-            stop_navigation()
-            maneuver = None
-            ok({"detenido": True, "habia_tarea": had_task})
-        else:
-            fail("Comando desconocido '{}'. Comandos: estado, destinos, escanear, ruta, ir_a, ir_a_punto, girar, avanzar, parar, volcar_profundidad".format(cmd))
-    except (TypeError, ValueError) as error:
-        fail("Argumentos invalidos para '{}': {}".format(cmd, error))
-    except Exception as error:  # noqa: BLE001 - un error en una orden no debe tumbar el controlador
-        print("ERROR EN EL COMANDO '{}':\n{}".format(cmd, traceback.format_exc()))
-        fail("Error interno del controlador en '{}': {}: {}".format(cmd, type(error).__name__, error))
-
-
-print("\nMiR100: YOLO + LiDAR + profundidad + mapa A*")
-print("VERSION DEL CONTROLADOR: " + VERSION_CONTROLADOR)
-print("Teclas 1/2/3: destino | 0 o ESPACIO: cancelar | Flechas: control manual")
-print("Evasion: regla local con LiDAR (lado con mas espacio libre)")
-print("PRECAUCION: prueba inicial en simulacion despejada, velocidad baja\n")
-
-# ===================================================
-# BUCLE PRINCIPAL
-# ===================================================
-while robot.step(time_step) != -1:
-    step_counter += 1
-    scan = read_lidar_distances(front_lidar, back_lidar)
-    if depth_camera is not None:
-        if step_counter % PROFUNDIDAD_CADA_N_PASOS == 0:
-            try:
-                depth_image = read_depth_image(depth_camera)
-                if depth_image is not None:
-                    px, py, pz = profundidad.puntos_obstaculo_xyz(
-                        depth_image, depth_camera.getFov(), depth_camera.getMinRange(), depth_camera.getMaxRange())
-                    depth_points_xy = (px, py)
-                    depth_sectors = profundidad.holgura_por_sector(*profundidad.holguras_de_puntos(px, py, pz))
-            except Exception as error:
-                depth_sectors = {}
-                if not depth_error_printed:
-                    depth_error_printed = True
-                    print("ERROR PROFUNDIDAD (se sigue solo con LiDAR): {}".format(error))
-        scan, depth_hits = profundidad.combinar(scan, depth_sectors)
-        if depth_hits and task is not None and robot.getTime() - depth_warned_at > OBSTACULO_ALTO_AVISO_SEGUNDOS:
-            depth_warned_at = robot.getTime()
-            emit("obstaculo_alto", {"tarea_id": task["tarea_id"], "sectores": depth_hits,
-                                    "detalle": "La camara de profundidad ve un obstaculo por encima del plano del LiDAR (por ejemplo una mesa)."})
-    # El mapa se construye siempre (tambien sin tarea): es la memoria del entorno.
-    if step_counter % MAPA_CADA_N_PASOS == 0:
-        try:
-            pose = robot_pose(robot_node)
-            for lidar_device, first_angle, position in ((front_lidar, lidar.PRIMER_ANGULO_FRONTAL, lidar.POSICION_FRONTAL),
-                                                        (back_lidar, lidar.PRIMER_ANGULO_TRASERO, lidar.POSICION_TRASERO)):
-                occupancy_map.actualizar_lidar(pose, lidar_device.getLayerRangeImage(0), first_angle, position,
-                                               lidar_device.getMaxRange(), math.degrees(lidar_device.getFov()))
-            occupancy_map.actualizar_alto(pose, *depth_points_xy)
-        except Exception as error:
-            print("ERROR MAPA: {}".format(error))
-    left_distance = scan["left"]
-    front_left_distance = scan["front_left"]
-    front_distance = scan["front"]
-    front_right_distance = scan["front_right"]
-    right_distance = scan["right"]
-    back_distance = scan["back"]
-    lidar_ok = scan["ok"]
-
-    # YOLO analiza todas las clases COCO: las personas activan STOP; los demas
-    # objetos solo se etiquetan. El LiDAR determina si el espacio es transitable.
-    image = camera.getImage()
-    if image:
-        frame = np.frombuffer(image, dtype=np.uint8).reshape((camera_height, camera_width, 4))
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
-        if step_counter % YOLO_EVERY_N_STEPS == 0:
-            try:
-                person_threshold = YOLO_CONFIANZA_PERSONA if person_model is not None else YOLO_CONFIANZA_PERSONA_YOLO11
-                results = model.predict(frame, conf=YOLO_CONFIDENCE if person_model is not None else person_threshold, verbose=False)
-                boxes = results[0].boxes if results else None
-                if person_model is not None:
-                    person_results = person_model.predict(frame, conf=person_threshold, verbose=False)
-                    candidate_boxes = list(person_results[0].boxes) if person_results else []
-                else:
-                    candidate_boxes = [b for b in (boxes or []) if int(b.cls[0]) == 0]
-                # Una persona de pie es mas alta que ancha: descarta recuadros chatos (falsos positivos).
-                person_boxes = []
-                for b in candidate_boxes:
-                    x1, y1, x2, y2 = b.xyxy[0].tolist()
-                    if (y2 - y1) >= PERSONA_PROPORCION_MIN * max(1.0, x2 - x1):
-                        person_boxes.append(b)
+        image = camera.getImage()
+        if image:
+            frame = np.frombuffer(image, dtype=np.uint8).reshape((camera.getHeight(), camera.getWidth(), 4))
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+            if step_counter % YOLO_EVERY_STEPS == 0:
+                results = model.predict(frame, conf=YOLO_CONFIDENCE, verbose=False)
                 person_detected = False
-                person_confidence = 0.0
-                seen_before = bool(people)
-                people = []
-                lidar_points_xy = None
-                if person_boxes:
-                    for detected_box in person_boxes:
-                        confidence = float(detected_box.conf[0])
-                        person_detected = True
-                        person_confidence = max(person_confidence, confidence)
-                        if lidar_points_xy is None:
-                            lidar_points_xy = lidar.puntos_xy(front_lidar.getLayerRangeImage(0), back_lidar.getLayerRangeImage(0),
-                                                              front_lidar.getMaxRange(), back_lidar.getMaxRange(),
-                                                              math.degrees(front_lidar.getFov()))
-                        located = personas.ubicar(detected_box.xyxy[0].tolist(), camera_width, camera_height,
-                                                  camera.getFov(), depth_points_xy, lidar_points_xy)
-                        located["confianza"] = confidence
-                        people.append(located)
-                # "esperar": cualquier persona delante dentro de distancia_persona detiene el avance.
-                wait_for_people = task is not None and task_options.get("al_ver_persona") == "esperar"
-                stop_distance = task_options.get("distancia_persona", PERSONA_PARADA_FRENTE_M) if wait_for_people else PERSONA_PARADA_FRENTE_M
-                person_blocking = any(p["holgura"] < stop_distance and abs(p["angulo"]) <= PERSONA_ANGULO_FRENTE for p in people)
-                person_near = any(p["holgura"] < PERSONA_LENTO_M for p in people)
-                # Zonas para el planificador, en el mundo; se olvidan si no se ven por un rato.
-                pose_now = robot_pose(robot_node)
-                people_zones = [z for z in people_zones if robot.getTime() - z[2] < PERSONA_MEMORIA_S]
-                for p in people:
-                    wx, wy = mapa_mod.robot_a_mundo(pose_now, p["x"], p["y"])
-                    p["x_mundo"], p["y_mundo"] = wx, wy
-                    people_zones.append((wx, wy, robot.getTime()))
-                # Memoria de personas en el mundo: siguen contando aunque salgan de la camara
-                # (al pasar a su lado ya no se ven, y ahi es cuando mas cerca estan).
-                for p in people:
-                    remember_person(p)
-                # "detenerse": la orden termina en cuanto se ve una persona dentro de distancia_persona.
-                if task is not None and task_options.get("al_ver_persona") == "detenerse":
-                    seen = [p for p in people if p["holgura"] <= task_options.get("distancia_persona", DISTANCIA_PERSONA_DEFECTO)]
-                    if seen:
-                        nearest = min(seen, key=lambda p: p["holgura"])
-                        finish_task("detenida", "persona_a_la_vista", "Detenido como se pidio: persona a {:.2f} m, angulo {:.0f}, en ({:.2f}, {:.2f}) [{}]".format(
-                            nearest["holgura"], nearest["angulo"], nearest["x_mundo"], nearest["y_mundo"], nearest["fuente"]))
-                        stop_navigation()
-                        maneuver = None
-                # Solo con al_ver_persona="rodear" la persona es una zona que la ruta evita. Por defecto
-                # ("continuar") la ruta NO cambia: las zonas tapaban pasillos (sobre todo con distancias
-                # estimadas por tamano) y el robot nunca se acercaba; la seguridad la cubre la parada a 1 m.
-                avoid_people = task is not None and task_options.get("al_ver_persona") == "rodear"
-                navigator.fijar_zonas([(x, y, PERSONA_ZONA_RADIO) for x, y, _ in people_zones[-6:]] if avoid_people else [])
-                if people and not seen_before and task is not None:
-                    nearest = min(people, key=lambda p: p["holgura"])
-                    emit("persona_detectada", {"tarea_id": task["tarea_id"], "holgura": round(nearest["holgura"], 2),
-                                               "angulo": round(nearest["angulo"]), "fuente": nearest["fuente"],
-                                               "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)],
-                                               "al_ver_persona": task_options.get("al_ver_persona", "continuar")})
-                annotated_frame = results[0].plot() if results else frame
-                # Personas detectadas y la distancia que mide el robot, sobre la ventana de YOLO.
-                if people:
-                    for b, p in zip(person_boxes, people):
-                        x1, y1, x2, y2 = [int(v) for v in b.xyxy[0].tolist()]
-                        stops = person_stop_distance(p) >= p["holgura"]
-                        cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255) if stops else (0, 200, 0), 2)
-                        cv2.putText(annotated_frame, "{:.2f} m [{}]{}".format(p["holgura"], p["fuente"], " STOP" if stops else ""),
-                                    (x1, max(15, y1 - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.6,
-                                    (0, 0, 255) if stops else (0, 200, 0), 2, cv2.LINE_AA)
-                if person_blocking:
-                    person_clear_count = 0
+                if results and results[0].boxes is not None:
+                    person_detected = any(int(b.cls[0]) == 0 for b in results[0].boxes)
+                person_clear_count = 0 if person_detected else person_clear_count + 1
+                annotated = results[0].plot() if results else frame
+            cv2.imshow('MiR100 YOLO', annotated if annotated is not None else frame)
+            cv2.waitKey(1)
+
+        keys = []
+        while True:
+            key = keyboard.getKey()
+            if key == -1:
+                break
+            keys.append(key)
+        for key in keys:
+            if key == ord('M') or key == ord('m'):
+                mapping_active = not mapping_active
+                print('MAPEO: {}'.format('ACTIVO' if mapping_active else 'PAUSADO'))
+            elif key == ord('S') or key == ord('s'):
+                memoria.save(MAP_FILE)
+                print('MAPA GUARDADO: {}'.format(MAP_FILE))
+            elif key == ord('P') or key == ord('p'):
+                print('MAPA | libres {}, ocupadas {}, desconocidas {}'.format(*memoria.stats()))
+            elif key == ord('V') or key == ord('v'):
+                show_map(memoria, robot_node, route, current_name)
+            elif key == ord('0') or key == ord(' '):
+                navigation_active = False
+                route = []
+                route_index = 0
+                recovery_active = False
+                recovery_attempts = 0
+                manual_speed = 0.0
+                manual_omega = 0.0
+                jev_ticket += 1
+                jev_pending = False
+                print('STOP: navegacion cancelada')
+            elif key in destinations:
+                navigation_active = True
+                current_goal = destinations[key]
+                current_name = DESTINATIONS[key]
+                route = []
+                route_index = 0
+                blocked_steps = 0
+                replan_attempts = 0
+                last_route_signature = None
+                last_route_start_position = None
+                last_replan_time = -999.0
+                last_block_obstacle = None
+                last_block_robot_position = None
+                turn_blocked_steps = 0
+                recovery_active = False
+                recovery_attempts = 0
+                recovery_start_xy = None
+                recovery_turn_clear_count = 0
+                last_motion_obstacle = None
+                last_motion_reason = 'OK'
+                last_progress_position = None
+                last_progress_time = robot.getTime()
+                manual_speed = 0.0
+                manual_omega = 0.0
+                jev_ticket += 1
+                jev_pending = False
+                print('PLANIFICANDO HACIA {}'.format(current_name))
+            elif not navigation_active and key == Keyboard.UP:
+                manual_speed = clamp(manual_speed + 0.05, -REVERSE_SPEED_MAX, MANUAL_SPEED_MAX)
+            elif not navigation_active and key == Keyboard.DOWN:
+                manual_speed = clamp(manual_speed - 0.05, -REVERSE_SPEED_MAX, MANUAL_SPEED_MAX)
+            elif not navigation_active and key == Keyboard.LEFT:
+                manual_omega = clamp(manual_omega + 0.05, -ANGULAR_SPEED_MAX, ANGULAR_SPEED_MAX)
+            elif not navigation_active and key == Keyboard.RIGHT:
+                manual_omega = clamp(manual_omega - 0.05, -ANGULAR_SPEED_MAX, ANGULAR_SPEED_MAX)
+
+        while not jev_results.empty():
+            ticket, action, confidence, error = jev_results.get_nowait()
+            if ticket == jev_ticket:
+                jev_pending = False
+                if error:
+                    print('JEV ERROR: {}'.format(error))
                 else:
-                    person_clear_count += 1
-            except Exception:  # noqa: BLE001 - la vision no debe tumbar el controlador
-                print("ERROR EN YOLO/PERSONAS (se sigue con LiDAR y profundidad):\n{}".format(traceback.format_exc()))
-        cv2.imshow("MiR100 - YOLO todas las clases", annotated_frame if annotated_frame is not None else frame)
-        cv2.waitKey(1)
+                    print('JEV ASESOR: {} | confianza {:.2f}'.format(action, confidence))
 
-    # Leer todas las teclas; ultimo evento tiene prioridad.
-    key = keyboard.getKey()
-    while True:
-        next_key = keyboard.getKey()
-        if next_key == -1:
-            break
-        key = next_key
+        if jev_pending and time.monotonic() - jev_requested_at > JEV_REQUEST_TIMEOUT:
+            jev_ticket += 1
+            jev_pending = False
+            print('JEV TIMEOUT (no afecta la seguridad)')
 
-    if key in destination_nodes:
-        start_task("ir_a", {"destino": DESTINATIONS[key]}, "teclado")
-        start_navigation(DESTINATIONS[key])
-    elif key == ord("0") or key == ord(" "):
-        finish_task("cancelada", "teclado", "Cancelada con la tecla 0/Espacio")
-        stop_navigation()
-        maneuver = None
-        print("NAVEGACION CANCELADA: STOP")
-    elif not navigation_active and maneuver is None:
-        if key == Keyboard.UP:
-            manual_speed = min(SPEED_MAX, manual_speed + SPEED_INCREMENT)
-        elif key == Keyboard.DOWN:
-            manual_speed = max(SPEED_MIN, manual_speed - SPEED_INCREMENT)
-        elif key == Keyboard.LEFT:
-            manual_omega = min(ANGULAR_SPEED_MAX, manual_omega + ANGULAR_SPEED_INCREMENT)
-        elif key == Keyboard.RIGHT:
-            manual_omega = max(-ANGULAR_SPEED_MAX, manual_omega - ANGULAR_SPEED_INCREMENT)
-
-    # PRIORIDAD (cada paso, con las personas RECORDADAS): persona a PERSONA_PARADA_M o menos = detenerse y avisar, sea cual sea
-    # la orden (tambien sin tarea). Se avisa una vez por encuentro; despues la seguridad sigue
-    # impidiendo avanzar hacia ella, pero el agente puede girar o retroceder.
-    tracked = remembered_people()
-    # Una posicion estimada solo por el tamano del recuadro es poco fiable: cuenta solo mientras se ve.
-    close = [p for p in tracked if p["holgura"] <= person_stop_distance(p)
-             and (p["fuente"] != "tamano_aproximado" or p["visto_hace"] <= 0.5)]
-    if close and not person_close_latched:
-        person_close_latched = True
-        nearest = min(close, key=lambda p: p["holgura"])
-        manual_speed = 0.0
-        manual_omega = 0.0
-        moving_task = task is not None and (navigation_active or maneuver is not None)
-        if moving_task:
-            # Se detiene y ESPERA: al terminar la espera retoma la tarea (ver bloque WAIT_PERSON).
-            person_pause_until = robot.getTime() + PERSONA_ESPERA_S
-            if mode != MODE_WAIT_PERSON:
-                saved_mode = mode
-                mode = MODE_WAIT_PERSON
-            person_since = robot.getTime()
-            person_warned = True
-            person_pause_target = (nearest["x_mundo"], nearest["y_mundo"])
-            person_last_present = person_last_request = robot.getTime()
-            alerts.pitido()
-            alerts.decir(FRASE_PEDIR_PASO)
-        detail = "Persona a {:.2f} m (angulo {:.0f}, en ({:.2f}, {:.2f}) [{}]): el robot se detuvo{}".format(
-            nearest["holgura"], nearest["angulo"], nearest["x_mundo"], nearest["y_mundo"], nearest["fuente"],
-            " y le pide paso; sigue cuando se aparte (espera maximo {:.0f} s)".format(PERSONA_ESPERA_S) if moving_task else "")
-        print("PERSONA CERCA: " + detail)
-        emit("persona_cerca", {"tarea_id": task["tarea_id"] if task else None, "holgura": round(nearest["holgura"], 2),
-                               "angulo": round(nearest["angulo"]), "fuente": nearest["fuente"],
-                               "posicion": [round(nearest["x_mundo"], 2), round(nearest["y_mundo"], 2)],
-                               "espera_s": PERSONA_ESPERA_S if moving_task else 0, "detalle": detail})
-    elif not any(p["holgura"] <= person_stop_distance(p) + PERSONA_REARME_M - PERSONA_PARADA_M for p in tracked):
-        person_close_latched = False
-    # Bandas de luz y pitido: amarillo con una persona cerca, parpadeo mientras le pide paso,
-    # naranja si no se aparto, cian normal. Un pitido al entrar alguien a PERSONA_LENTO_M.
-    near_now = any(p["holgura"] <= PERSONA_LENTO_M for p in tracked)
-    if near_now and not person_near_announced:
-        person_near_announced = True
-        alerts.pitido()
-    elif not any(p["holgura"] <= PERSONA_LENTO_M + 0.5 for p in tracked):
-        person_near_announced = False
-    if person_pause_until is not None:
-        alerts.luz("persona" if int(robot.getTime() * 2) % 2 == 0 else "apagado")
-    elif person_stuck:
-        alerts.luz("detenido")
-    elif near_now:
-        alerts.luz("persona")
-    else:
-        alerts.luz("normal")
-
-    # Ordenes del puente (agente / MCP). Se procesan aqui, en el hilo de Webots.
-    if bridge is not None:
-        for client, message in bridge.poll():
-            handle_command(client, message)
-
-    now = robot.getTime()
-    target_speed = manual_speed if not navigation_active and maneuver is None else 0.0
-    target_omega = manual_omega if not navigation_active and maneuver is None else 0.0
-
-    # Persona DELANTE y cerca. Con ruta planificada no se espera: la persona es una zona a
-    # evitar, el planificador busca otra ruta y la seguridad solo frena el avance (puede girar).
-    # Sin planificador (navegacion reactiva) se espera a que se aparte.
-    if person_blocking and (mode not in (MODE_WAIT_PERSON, MODE_PLAN) or (wait_for_people and mode != MODE_WAIT_PERSON)):
-        saved_mode = mode
-        mode = MODE_WAIT_PERSON
-        manual_speed = 0.0
-        manual_omega = 0.0
-        person_since = now
-        person_warned = False
-        blocker = min(people, key=lambda p: p["holgura"]) if people else {"holgura": 0.0, "angulo": 0.0}
-        print("PERSONA DELANTE a {:.2f} m (angulo {:.0f}): ESPERANDO".format(blocker["holgura"], blocker["angulo"]))
-        if task is not None:
-            emit("persona_en_el_camino", {"tarea_id": task["tarea_id"], "holgura": round(blocker["holgura"], 2),
-                                          "angulo": round(blocker["angulo"])})
-
-    if mode == MODE_WAIT_PERSON:
-        target_speed = 0.0
-        target_omega = 0.0
-        # No cuenta como falta de progreso ni consume el tiempo de una maniobra.
-        progress_position = planar_position(robot_node)
-        progress_time = now
-        if maneuver is not None:
-            maneuver["inicio"] += time_step / 1000.0
-        if person_pause_until is not None:
-            # Espera por una persona: le pide paso y sigue en cuanto se aparta (sin rastro en camara
-            # ni LiDAR durante PERSONA_LIBRE_S). Si no se aparta en PERSONA_ESPERA_S, se detiene.
-            if person_still_there(person_pause_target):
-                person_last_present = now
-            if now - person_last_present >= PERSONA_LIBRE_S:
-                person_pause_until = None
-                forget_person_near(person_pause_target)
-                mode = saved_mode
-                print("LA PERSONA SE APARTO: REANUDANDO")
-                alerts.decir(FRASE_GRACIAS)
-                if task is not None:
-                    emit("persona_se_aparto", {"tarea_id": task["tarea_id"], "espera_s": round(now - person_since, 1),
-                                               "detalle": "La persona se aparto; el robot retoma la tarea."})
-            elif now >= person_pause_until:
-                person_pause_until = None
-                person_stuck = True
-                alerts.decir(FRASE_NO_PUEDO)
-                if task is not None:
-                    finish_task("detenida", "persona_sigue_cerca", "Tras pedir paso y esperar {:.0f} s la persona sigue en ({:.2f}, {:.2f}): el robot queda detenido".format(
-                        PERSONA_ESPERA_S, person_pause_target[0], person_pause_target[1]))
-                stop_navigation()
-                maneuver = None
-            elif now - person_last_request >= PERSONA_REPETIR_AVISO_S:
-                person_last_request = now
-                alerts.decir(FRASE_REPETIR)
-        elif task is not None and not person_warned and person_since is not None and now - person_since > PERSONA_BLOQUEANDO_SEGUNDOS:
-            person_warned = True
-            emit("persona_bloqueando", {"tarea_id": task["tarea_id"], "segundos": round(now - person_since, 1),
-                                        "detalle": "Una persona frena la tarea; el robot sigue esperando. Se puede esperar mas o cancelar."})
-        if person_pause_until is None and not person_blocking and person_clear_count >= PERSON_CLEAR_DETECTIONS:
-            mode = saved_mode
-            if mode in (MODE_AVOID_TURN, MODE_AVOID_FOLLOW):
-                avoid_started = now
-            print("PERSONA DESPEJADA: REANUDANDO")
-            if task is not None:
-                emit("persona_despejada", {"tarea_id": task["tarea_id"]})
-
-    elif navigation_active and current_destination is not None:
-        distance, goal_angle = goal_geometry(robot_node, current_destination)
-        if lidar_ok:
-            lidar_bad_since = None
-        if distance <= ARRIVAL_DISTANCE:
-            print("\nDESTINO ALCANZADO: {} | Distancia {:.2f} m".format(current_destination_name, distance))
-            finish_task("exito", "llego", "Llego a {} (a {:.2f} m)".format(current_destination_name, distance))
-            stop_navigation()
-            target_speed = 0.0
-            target_omega = 0.0
-        elif not lidar_ok:
-            target_speed = 0.0
-            target_omega = 0.0
-            if lidar_bad_since is None:
-                lidar_bad_since = now
-                emit("lidar_sin_datos", {"tarea_id": task["tarea_id"] if task else None, "lidar": {k: round(scan[k], 2) for k in ("left", "front_left", "front", "front_right", "right", "back")}})
-            elif now - lidar_bad_since > LIDAR_SIN_DATOS_SEGUNDOS:
-                finish_task("fallo", "lidar_sin_datos", "El LiDAR no da lecturas suficientes desde hace {:.0f} s; sin datos se considera bloqueado".format(now - lidar_bad_since))
-                stop_navigation()
-            if step_counter % LOG_EVERY_STEPS == 0:
-                print("SEGURIDAD: LiDAR sin lecturas suficientes, STOP")
-        elif mode == MODE_PLAN:
-            target_speed, target_omega, plan_result = navigator.paso(robot_pose(robot_node), now)
-            if plan_result == planificador.LLEGO:
-                if distance <= PLAN_LLEGADA_CERCA:
-                    print("\nDESTINO ALCANZADO (ruta): {} | Distancia {:.2f} m".format(current_destination_name, distance))
-                    finish_task("exito", "llego", "Llego a {} por ruta planificada (a {:.2f} m)".format(current_destination_name, distance))
-                else:
-                    finish_task("fallo", "meta_inalcanzable", "La meta {} esta dentro de un obstaculo segun el mapa; el robot llego lo mas cerca posible (a {:.2f} m)".format(
-                        current_destination_name, distance))
-                stop_navigation()
-                target_speed = target_omega = 0.0
-            elif plan_result == planificador.SIN_RUTA:
-                print("SIN RUTA A {}".format(current_destination_name))
-                finish_task("fallo", "sin_ruta", "El mapa no tiene ningun camino libre hacia {} (distancia {:.2f} m): todo lo conocido alrededor esta bloqueado | {}".format(
-                    current_destination_name, distance, scan_text(scan)))
-                stop_navigation()
-                target_speed = target_omega = 0.0
-        elif mode == MODE_GOAL:
-            # Girar hacia destino sin avanzar hasta que este orientado.
-            if abs(goal_angle) > NAVIGATION_ANGLE_TOLERANCE:
+        target_speed = manual_speed if not navigation_active else 0.0
+        target_omega = manual_omega if not navigation_active else 0.0
+        if navigation_active and current_goal is not None:
+            position = robot_node.getPosition()
+            goal = current_goal.getPosition()
+            distance_to_goal = math.hypot(goal[0] - position[0], goal[1] - position[1])
+            if distance_to_goal <= ARRIVAL_DISTANCE:
+                print('DESTINO ALCANZADO: {} | {:.2f} m'.format(current_name, distance_to_goal))
+                navigation_active = False
+                route = []
+                route_index = 0
+                recovery_active = False
                 target_speed = 0.0
-                target_omega = clamp(goal_angle * 1.2, -NAVIGATION_TURN_SPEED, NAVIGATION_TURN_SPEED)
-            elif forward_corridor_clear(scan):
-                target_speed = min(NAVIGATION_SPEED, max(0.06, 0.5 * distance))
-                target_omega = clamp(goal_angle * 0.5, -NAVIGATION_TURN_SPEED, NAVIGATION_TURN_SPEED)
+                target_omega = 0.0
             else:
-                # Obstruccion: la regla local elige el lado; la capa de seguridad sigue al final.
-                target_speed = 0.0
-                target_omega = 0.0
-                direction = choose_avoid_direction(scan)
-                if avoid_attempts >= MAX_AVOID_ATTEMPTS:
-                    print("LIMITE DE EVASIONES: STOP")
-                    finish_task("fallo", "limite_evasiones", "Obstaculo al frente tras {} evasiones; distancia al destino {:.2f} m | {}".format(avoid_attempts, distance, scan_text(scan)))
-                    stop_navigation()
-                elif direction is None:
-                    print("NO HAY ESPACIO LATERAL SUFICIENTE: STOP")
-                    finish_task("fallo", "sin_espacio_lateral", "Obstaculo al frente y ningun lado con espacio para girar | {}".format(scan_text(scan)))
-                    stop_navigation()
-                else:
-                    avoid_direction = direction
-                    avoid_attempts += 1
-                    mode = MODE_AVOID_TURN
-                    avoid_started = robot.getTime()
-                    avoid_start_position = planar_position(robot_node)
-                    print("OBSTACULO: GIRAR {} | {} | destino {}".format(avoid_direction, scan_text(scan), current_destination_name))
-                    emit("evasion_iniciada", {"tarea_id": task["tarea_id"] if task else None, "direccion": avoid_direction,
-                                              "intento": avoid_attempts, "max_intentos": MAX_AVOID_ATTEMPTS, "lidar": scan_text(scan)})
-        elif mode == MODE_AVOID_TURN:
-            target_speed = 0.0
-            target_omega = AVOID_TURN_SPEED if avoid_direction == "LEFT" else -AVOID_TURN_SPEED
-            # No depende de un numero de pasos: espera a ver espacio realmente libre.
-            if forward_corridor_clear(scan) and front_distance >= FRONT_CLEAR_DISTANCE:
-                mode = MODE_AVOID_FOLLOW
-                target_omega = 0.0
-                target_speed = AVOID_FORWARD_SPEED
-                print("FRENTE LIBRE: SIGUIENDO BORDE DEL OBSTACULO")
-        elif mode == MODE_AVOID_FOLLOW:
-            # Velocidad y giro ajustados continuamente por distancia al obstaculo.
-            if not forward_corridor_clear(scan):
-                mode = MODE_AVOID_TURN
-                target_speed = 0.0
-                target_omega = AVOID_TURN_SPEED if avoid_direction == "LEFT" else -AVOID_TURN_SPEED
-            else:
-                target_speed = AVOID_FORWARD_SPEED
-                target_omega = follow_side_omega(avoid_direction, left_distance, right_distance, goal_angle)
-                traveled = float(np.linalg.norm(planar_position(robot_node) - avoid_start_position))
-                if traveled >= AVOID_MIN_TRAVEL and abs(goal_angle) < AVOID_HEADING_TOLERANCE and forward_corridor_clear(scan) and front_distance > FRONT_CLEAR_DISTANCE:
-                    mode = MODE_GOAL
-                    print("EVASION TERMINADA: RETOMANDO {}".format(current_destination_name))
-                    emit("evasion_terminada", {"tarea_id": task["tarea_id"] if task else None, "distancia_destino": round(distance, 2)})
-        if navigation_active and mode in (MODE_AVOID_TURN, MODE_AVOID_FOLLOW) and robot.getTime() - avoid_started > AVOID_MAX_SECONDS:
-            print("EVASION SIN SALIDA EN {:.0f} s: STOP".format(AVOID_MAX_SECONDS))
-            finish_task("fallo", "evasion_sin_salida", "La evasion hacia {} no encontro salida en {:.0f} s | {}".format(avoid_direction, AVOID_MAX_SECONDS, scan_text(scan)))
-            stop_navigation()
-            target_speed = 0.0
-            target_omega = 0.0
-        # Vigilancia: navegando sin desplazarse = atascado (aunque ninguna regla haya saltado).
-        if navigation_active:
-            here = planar_position(robot_node)
-            if float(np.linalg.norm(here - progress_position)) >= SIN_PROGRESO_DISTANCIA:
-                progress_position = here
-                progress_time = now
-            elif now - progress_time > SIN_PROGRESO_SEGUNDOS:
-                print("SIN PROGRESO EN {:.0f} s: STOP".format(SIN_PROGRESO_SEGUNDOS))
-                finish_task("fallo", "sin_progreso", "Navegando sin avanzar {:.2f} m en {:.0f} s (modo {}); distancia al destino {:.2f} m | {}".format(
-                    SIN_PROGRESO_DISTANCIA, SIN_PROGRESO_SEGUNDOS, mode, distance, scan_text(scan)))
-                stop_navigation()
-                target_speed = 0.0
-                target_omega = 0.0
-        if navigation_active and step_counter % LOG_EVERY_STEPS == 0:
-            print("{} | {} | Dist {:.2f} m | Ang {:.2f} rad | {}".format(current_destination_name, mode, distance, goal_angle, scan_text(scan)))
+                if not route and robot.getTime() - last_replan_time >= PLANNING_MIN_INTERVAL:
+                    last_replan_time = robot.getTime()
+                    candidate = memoria.find_path((position[0], position[1]), (goal[0], goal[1]))
+                    signature = route_signature(candidate, MAP_RESOLUTION)
+                    valid_candidate, candidate_reason = validate_candidate(memoria, (position[0], position[1]), candidate)
+                    if not candidate:
+                        print('A*: SIN RUTA CONOCIDA hacia {}. Mapea otro pasillo.'.format(current_name))
+                        navigation_active = False
+                        route_index = 0
+                        target_speed = 0.0
+                        target_omega = 0.0
+                        if JEV_ENABLED and JEV_AVAILABLE and os.getenv('TYPESAFE_API_KEY') and not jev_pending:
+                            jev_ticket += 1
+                            observation = {'destination': current_name, 'goal_distance_m': round(distance_to_goal, 2), 'lidar': {k: round(scan[k], 2) for k in ('I', 'DI', 'F', 'DD', 'D')}, 'map_status': 'No verified path over known free cells'}
+                            threading.Thread(target=jev_worker, args=(jev_ticket, observation, jev_results), daemon=True).start()
+                            jev_pending = True
+                            jev_requested_at = time.monotonic()
+                    elif not valid_candidate:
+                        print('A*: RUTA DESCARTADA: {}'.format(candidate_reason))
+                        for index, point in enumerate(candidate[:ROUTE_LOG_MAX_POINTS]):
+                            print('  A* PUNTO {}: X {:.2f} Y {:.2f}'.format(index + 1, point[0], point[1]))
+                        navigation_active = False
+                        route = []
+                        route_index = 0
+                    elif last_route_signature is not None and signature == last_route_signature and last_route_start_position is not None and math.hypot(position[0] - last_route_start_position[0], position[1] - last_route_start_position[1]) < REPLAN_MIN_PROGRESS:
+                        print('RUTA REPETIDA SIN AVANCE: STOP. Revisar obstaculo y mapa antes de continuar.')
+                        navigation_active = False
+                        route = []
+                        route_index = 0
+                        target_speed = 0.0
+                        target_omega = 0.0
+                    else:
+                        route = candidate
+                        route_index = 1 if len(route) > 1 else 0
+                        last_route_signature = signature
+                        last_route_start_position = (position[0], position[1])
+                        print('A*: ruta a {} con {} puntos | intento {}'.format(current_name, len(route), replan_attempts))
+                        if replan_attempts > 0:
+                            for index, point in enumerate(route[:ROUTE_LOG_MAX_POINTS]):
+                                print('  A* PUNTO {}: X {:.2f} Y {:.2f}'.format(index + 1, point[0], point[1]))
+                if navigation_active and route:
+                    if route_index >= len(route):
+                        # Los puntos de A* pueden finalizar antes del centro exacto del destino.
+                        # No borrar la ruta ni crear otra mientras quede una aproximacion corta.
+                        if distance_to_goal <= FINAL_APPROACH_DISTANCE:
+                            target_speed, target_omega, _ = waypoint_command(robot_node, (goal[0], goal[1]), NAVIGATION_SPEED * 0.65)
+                        else:
+                            print('ULTIMO PUNTO COMPLETADO, PERO DESTINO LEJANO: STOP ({:.2f} m)'.format(distance_to_goal))
+                            navigation_active = False
+                            target_speed = 0.0
+                            target_omega = 0.0
+                    else:
+                        waypoint = route[route_index]
+                        target_speed, target_omega, dist_wp = waypoint_command(robot_node, waypoint, NAVIGATION_SPEED)
+                        if dist_wp <= WAYPOINT_DISTANCE:
+                            route_index += 1
+                            target_speed = 0.0
+                            target_omega = 0.0
+                            blocked_steps = 0
+                    # Seguridad usa retornos reales del LiDAR en el corredor de movimiento.
+                    # La recuperacion no fuerza giros: desplaza el robot solo si el corredor elegido esta despejado.
+                    proposed_speed, proposed_omega = target_speed, target_omega
+                    person_stop = person_detected or (person_clear_count < PERSON_CLEAR_DETECTIONS and step_counter > YOLO_EVERY_STEPS)
+                    if recovery_active:
+                        travelled_back = math.hypot(position[0] - recovery_start_xy[0], position[1] - recovery_start_xy[1])
+                        elapsed = robot.getTime() - recovery_start_time
+                        target_speed, target_omega = 0.0, 0.0
+                        movement_clear, movement_reason = recovery_motion_clear(robot_node, environment, recovery_direction, person_stop)
+                        if not movement_clear:
+                            print('RECUPERACION CANCELADA: {} | {}'.format(movement_reason, blocking_hit_diagnostic(robot_node, environment, last_motion_obstacle, scan)))
+                            recovery_active = False
+                            navigation_active = False
+                            route = []
+                            route_index = 0
+                        elif travelled_back >= (RECOVERY_REVERSE_DISTANCE if recovery_direction < 0 else RECOVERY_FORWARD_DISTANCE) or elapsed >= RECOVERY_MAX_SECONDS:
+                            print('RECUPERACION FINALIZADA | movimiento {:.2f} m | tiempo {:.1f} s'.format(travelled_back, elapsed))
+                            recovery_active = False
+                            if travelled_back < RECOVERY_REQUIRED_MOVEMENT:
+                                print('RECUPERACION SIN DESPLAZAMIENTO SUFICIENTE: STOP')
+                                navigation_active = False
+                                route = []
+                                route_index = 0
+                            else:
+                                # Despues de reposicionar se calcula una ruta desde la nueva posicion.
+                                route = []
+                                route_index = 0
+                                blocked_steps = 0
+                                turn_blocked_steps = 0
+                                last_route_signature = None
+                                last_route_start_position = None
+                                last_block_obstacle = None
+                                last_block_robot_position = None
+                                last_replan_time = robot.getTime() - PLANNING_MIN_INTERVAL
+                                last_progress_position = (position[0], position[1])
+                                last_progress_time = robot.getTime()
+                                print('RECUPERACION: recalculando A* desde nueva posicion')
+                        else:
+                            target_speed = recovery_direction * RECOVERY_REVERSE_SPEED
+                            target_omega = 0.0
+                    else:
+                        allowed, collision_point, collision_reason = clearance_for_motion(robot_node, environment, proposed_speed, proposed_omega)
+                        moving = proposed_speed > 0.005
+                        rotating = abs(proposed_omega) > 0.01 and abs(proposed_speed) < 0.015
+                        if moving and not allowed:
+                            blocked_steps += 1
+                            target_speed, target_omega = 0.0, 0.0
+                            last_motion_obstacle = collision_point
+                            last_motion_reason = collision_reason
+                        elif rotating and not allowed:
+                            turn_blocked_steps += 1
+                            target_speed, target_omega = 0.0, 0.0
+                            last_motion_obstacle = collision_point
+                            last_motion_reason = collision_reason
+                            if turn_blocked_steps == 1 or turn_blocked_steps == TURN_BLOCKED_MAX_STEPS:
+                                print('GIRO BLOQUEADO: {}'.format(blocking_hit_diagnostic(robot_node, environment, collision_point, scan)))
+                        else:
+                            if allowed and moving:
+                                blocked_steps = 0
+                                turn_blocked_steps = 0
+                            if allowed and rotating:
+                                turn_blocked_steps = 0
+                        if navigation_active and turn_blocked_steps >= TURN_BLOCKED_MAX_STEPS:
+                            print('GIRO IMPOSIBLE: envolvente de rotacion ocupada | intento recuperacion {}/{}'.format(recovery_attempts + 1, RECOVERY_MAX_ATTEMPTS))
+                            recover_direction, recovery_reason = can_begin_recovery(robot_node, environment, scan, person_stop)
+                            if recovery_attempts < RECOVERY_MAX_ATTEMPTS and recover_direction != 0:
+                                recovery_attempts += 1
+                                recovery_active = True
+                                recovery_direction = recover_direction
+                                recovery_start_xy = (position[0], position[1])
+                                recovery_start_time = robot.getTime()
+                                turn_blocked_steps = 0
+                                blocked_steps = 0
+                                target_speed, target_omega = 0.0, 0.0
+                                print('RECUPERACION INICIADA | {} maximo {:.2f} m | F {:.2f} B {:.2f} | intento {}/{}'.format(recovery_reason, RECOVERY_REVERSE_DISTANCE if recovery_direction < 0 else RECOVERY_FORWARD_DISTANCE, scan['F'], scan['B'], recovery_attempts, RECOVERY_MAX_ATTEMPTS))
+                            else:
+                                print('GIRO SIN RECUPERACION SEGURA: {} | STOP'.format(recovery_reason if recover_direction == 0 else 'LIMITE DE INTENTOS'))
+                                navigation_active = False
+                                recovery_active = False
+                                route = []
+                                route_index = 0
+                                target_speed, target_omega = 0.0, 0.0
+                    if navigation_active and blocked_steps >= REPLAN_BLOCKED_STEPS:
+                        blocked_steps = 0
+                        replan_attempts += 1
+                        obstacle = last_motion_obstacle
+                        if obstacle is not None:
+                            distancia_eco = math.hypot(obstacle[0] - position[0], obstacle[1] - position[1])
+                            memoria.mark_temporary_obstacle(obstacle[0], obstacle[1], radius=TEMP_BLOCK_RADIUS, expires_at=robot.getTime() + TEMP_BLOCK_SECONDS)
+                            print('OBSTACULO GEOLOCALIZADO | X {:.2f} Y {:.2f} | distancia al centro {:.2f} m | {}'.format(obstacle[0], obstacle[1], distancia_eco, last_motion_reason))
+                            print_map_diagnostic(memoria, robot_node, (obstacle[0], obstacle[1], distancia_eco), route)
+                            current_xy = (position[0], position[1])
+                            repeated_obstacle = last_block_obstacle is not None and math.hypot(obstacle[0] - last_block_obstacle[0], obstacle[1] - last_block_obstacle[1]) <= REPLAN_OBSTACLE_SAME_DISTANCE
+                            no_progress = last_block_robot_position is not None and math.hypot(current_xy[0] - last_block_robot_position[0], current_xy[1] - last_block_robot_position[1]) < REPLAN_MIN_PROGRESS
+                            if repeated_obstacle and no_progress:
+                                print('BLOQUEO PERSISTENTE: mismo punto de colision y sin progreso; detener')
+                                navigation_active = False
+                            last_block_obstacle = obstacle
+                            last_block_robot_position = current_xy
+                        else:
+                            print('BLOQUEO SIN ECO LOCALIZABLE: STOP. Revisar calibracion LiDAR')
+                            navigation_active = False
+                        if replan_attempts >= REPLAN_MAX_ATTEMPTS:
+                            print('LIMITE DE REPLANIFICACIONES: STOP')
+                            navigation_active = False
+                        if navigation_active:
+                            route = []
+                            route_index = 0
+                            last_replan_time = robot.getTime() - PLANNING_MIN_INTERVAL
+                            print('OBSTACULO NUEVO: A* recalcular con zona temporalmente bloqueada ({}/{})'.format(replan_attempts, REPLAN_MAX_ATTEMPTS))
+                        else:
+                            route = []
+                            route_index = 0
+                if navigation_active and not recovery_active and last_progress_position is not None:
+                    travelled = math.hypot(position[0] - last_progress_position[0], position[1] - last_progress_position[1])
+                    if travelled > 0.20:
+                        last_progress_time = robot.getTime()
+                        last_progress_position = (position[0], position[1])
+                        if replan_attempts > 0:
+                            replan_attempts = max(0, replan_attempts - 1)
+                    elif robot.getTime() - last_progress_time > 15.0 and abs(target_speed) > 0.03:
+                        print('SIN PROGRESO REAL por 15 s: STOP')
+                        navigation_active = False
+                        route = []
+                        route_index = 0
+                elif navigation_active and not recovery_active:
+                    last_progress_position = (position[0], position[1])
+                    last_progress_time = robot.getTime()
+                if navigation_active and step_counter % 50 == 0:
+                    total_tramos = max(0, len(route) - 1)
+                    tramo_actual = min(route_index, total_tramos) if route else 0
+                    print('{} | distancia {:.2f} m | tramo {}/{} | I {:.2f} DI {:.2f} F {:.2f} DD {:.2f} D {:.2f}'.format(current_name, distance_to_goal, tramo_actual, total_tramos, scan['I'], scan['DI'], scan['F'], scan['DD'], scan['D']))
 
-    elif maneuver is not None:
-        # Maniobra corta pedida por el agente (girar N grados / avanzar N metros).
-        elapsed = now - maneuver["inicio"]
-        if maneuver["tipo"] == "girar":
-            forward = planar_forward(robot_node)
-            maneuver["hecho"] += heading_delta(maneuver["frente_previo"], forward)
-            maneuver["frente_previo"] = forward
-            remaining = maneuver["objetivo"] - maneuver["hecho"]
-            done = abs(remaining) < math.radians(2.0)
-            target_omega = 0.0 if done else math.copysign(clamp(abs(remaining) * 1.5, 0.05, MANIOBRA_GIRO), remaining)
-        else:
-            maneuver["hecho"] = float(np.linalg.norm(planar_position(robot_node) - maneuver["posicion_inicial"]))
-            remaining = abs(maneuver["objetivo"]) - maneuver["hecho"]
-            done = remaining < 0.03
-            target_speed = 0.0 if done else math.copysign(clamp(remaining * 0.8, 0.05, MANIOBRA_VELOCIDAD), maneuver["objetivo"])
-        if done:
-            amount = math.degrees(maneuver["hecho"]) if maneuver["tipo"] == "girar" else maneuver["hecho"]
-            finish_task("exito", "maniobra_completa", "{} completado: {:.2f} {}".format(maneuver["tipo"], amount, "grados" if maneuver["tipo"] == "girar" else "m"))
-            maneuver = None
+        if recovery_active and not navigation_active:
+            recovery_active = False
+        # Una persona tiene prioridad. No se confia en una ruta si LiDAR ve objetos nuevos.
+        target_speed, target_omega, safety_hit, safety_reason = safe_drive(target_speed, target_omega, environment, robot_node, person_detected or (person_clear_count < PERSON_CLEAR_DETECTIONS and step_counter > YOLO_EVERY_STEPS))
+        if recovery_active and safety_reason != 'OK':
+            print('RECUPERACION ABORTADA POR SEGURIDAD: {}'.format(safety_reason))
+            recovery_active = False
+            navigation_active = False
+            route = []
+            route_index = 0
             target_speed = 0.0
             target_omega = 0.0
-        elif elapsed > MANIOBRA_TIEMPO_MAX:
-            finish_task("fallo", "tiempo_agotado", "La maniobra {} no termino en {:.0f} s".format(maneuver["tipo"], MANIOBRA_TIEMPO_MAX))
-            maneuver = None
-            target_speed = 0.0
-            target_omega = 0.0
+        if safety_reason != 'OK' and step_counter % 60 == 0:
+            print('SEGURIDAD: {} | persona {} | rayos frente {} atras {}'.format(safety_reason, person_detected, environment['front_count'], environment['back_count']))
+        actual_omega = target_omega * TURN_SIGN
+        left_velocity = (target_speed - actual_omega * DISTANCE_TO_CENTER) / WHEEL_RADIUS
+        right_velocity = (target_speed + actual_omega * DISTANCE_TO_CENTER) / WHEEL_RADIUS
+        left_motor.setVelocity(left_velocity)
+        right_motor.setVelocity(right_velocity)
 
-    # SEGURIDAD FINAL: no permitir avance si la huella frontal esta ocupada.
-    requested_speed, requested_omega = target_speed, target_omega
-    safety_block = None
-    if not lidar_ok:
-        target_speed = 0.0
-        target_omega = 0.0
-        safety_block = "lidar_sin_datos"
-    planned = navigation_active and mode == MODE_PLAN
-    if target_speed > 0.0 and not (plan_forward_clear(scan) if planned else forward_corridor_clear(scan)):
-        target_speed = 0.0
-        if not planned:
-            target_omega = 0.0  # en ruta planificada se puede seguir girando hacia la ruta
-        safety_block = "corredor_frontal_ocupado"
-        if planned:
-            navigator.replanificar_ya()
-        if step_counter % LOG_EVERY_STEPS == 0:
-            print("SEGURIDAD CORREDOR: {} | STOP".format(scan_text(scan)))
-    # Precaucion con rotaciones junto a maquinaria cercana.
-    if abs(target_omega) > 0.0 and target_speed == 0.0:
-        turn_direction = "LEFT" if target_omega > 0 else "RIGHT"
-        if not (plan_turn_clear(scan, turn_direction) if planned else turn_clearance(scan, turn_direction)):
-            target_omega = 0.0
-            safety_block = "sin_espacio_para_girar_" + ("izquierda" if turn_direction == "LEFT" else "derecha")
-            if step_counter % LOG_EVERY_STEPS == 0:
-                print("GIRO BLOQUEADO: {} | {}".format(turn_direction, scan_text(scan)))
-    if target_speed < 0.0 and back_distance < SAFE_DISTANCE_BACK:
-        target_speed = 0.0
-        safety_block = "obstaculo_atras"
-    if mode == MODE_WAIT_PERSON or person_blocking:
-        if target_speed > 0.0:
-            target_speed = 0.0
-            safety_block = "persona_delante"
-        if mode == MODE_WAIT_PERSON:
-            target_omega = 0.0
-    elif person_near and target_speed > PERSONA_VELOCIDAD:
-        target_speed = PERSONA_VELOCIDAD  # pasar con cuidado
-
-    # Navegacion frenada por la seguridad (por ejemplo, no puede girar hacia el destino):
-    # se informa en segundos con la regla exacta, en vez de esperar al vigilante de progreso.
-    if not navigation_active or mode == MODE_WAIT_PERSON or person_blocking:
-        nav_blocked_since = None  # esperar a una persona no es un bloqueo
-    else:
-        nav_blocked = (requested_speed != 0.0 and target_speed == 0.0) or (requested_omega != 0.0 and target_omega == 0.0)
-        if not nav_blocked:
-            nav_blocked_since = None
-        elif nav_blocked_since is None:
-            nav_blocked_since = now
-        elif now - nav_blocked_since > BLOQUEO_NAVEGACION_SEGUNDOS:
-            print("NAVEGACION BLOQUEADA POR SEGURIDAD ({}): STOP".format(safety_block))
-            finish_task("fallo", "bloqueado_por_seguridad", "La seguridad impide seguir hacia {} desde hace {:.0f} s ({}, modo {}) | {} | atras {:.2f}".format(
-                current_destination_name, now - nav_blocked_since, safety_block, mode, scan_text(scan), back_distance))
-            stop_navigation()
-            target_speed = 0.0
-            target_omega = 0.0
-
-    # Una maniobra que la seguridad frena durante un rato falla con el motivo exacto.
-    if maneuver is not None and mode != MODE_WAIT_PERSON:
-        blocked = (requested_speed != 0.0 and target_speed == 0.0) or (requested_omega != 0.0 and target_omega == 0.0)
-        if not blocked:
-            maneuver["bloqueado_desde"] = None
-        elif maneuver["bloqueado_desde"] is None:
-            maneuver["bloqueado_desde"] = now
-        elif now - maneuver["bloqueado_desde"] > MANIOBRA_BLOQUEO_SEGUNDOS:
-            finish_task("fallo", "maniobra_bloqueada", "La seguridad impide {} ({}) | {} | atras {:.2f}".format(
-                maneuver["tipo"], safety_block, scan_text(scan), back_distance))
-            maneuver = None
-            target_speed = 0.0
-            target_omega = 0.0
-
-    # TURN_SIGN corrige la direccion fisica de los motores si fuera necesario.
-    target_omega *= TURN_SIGN
-    left_speed = (target_speed - target_omega * DISTANCE_TO_CENTER) / WHEEL_RADIUS
-    right_speed = (target_speed + target_omega * DISTANCE_TO_CENTER) / WHEEL_RADIUS
-    motor_left_wheel.setVelocity(left_speed)
-    motor_right_wheel.setVelocity(right_speed)
-
-motor_left_wheel.setVelocity(0.0)
-motor_right_wheel.setVelocity(0.0)
-if bridge is not None:
-    bridge.cerrar()
-cv2.destroyAllWindows()
+        if robot.getTime() - last_save_time >= SAVE_EVERY_SIM_SECONDS and mapping_active:
+            memoria.save(MAP_FILE)
+            last_save_time = robot.getTime()
+            print('MEMORIA GUARDADA | libres {}, ocupadas {}, desconocidas {}'.format(*memoria.stats()))
+finally:
+    left_motor.setVelocity(0.0)
+    right_motor.setVelocity(0.0)
+    memoria.save(MAP_FILE)
+    cv2.destroyAllWindows()
